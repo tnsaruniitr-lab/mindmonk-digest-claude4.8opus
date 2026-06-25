@@ -1,116 +1,129 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+// Caption-only transcript + lightweight watch-page metadata.
+// NO yt-dlp: we never touch YouTube's media/player layer, so we avoid the
+// "Sign in to confirm you're not a bot" challenge that blocks yt-dlp from
+// cloud/datacenter IPs (Railway). We hit the same surface as the "Show
+// transcript" button: watch page -> caption tracks -> timedtext.
+// (Filename kept so imports don't churn.)
+import { YoutubeTranscript } from 'youtube-transcript'
+import { parseVideoId } from '../util/youtube'
 import { retry } from '../util/retry'
-
-const pexec = promisify(execFile)
 
 export interface VideoMeta {
   id: string
   title: string | null
   channel: string | null
   durationSeconds: number | null
-  liveStatus: string | null // is_live | was_live | not_live | is_upcoming | post_live | null
-}
-
-interface CaptionTrack {
-  ext: string
-  url: string
+  liveStatus: string | null // is_live | is_upcoming | not_live | null
 }
 
 export interface VideoData {
   meta: VideoMeta
-  /** lang -> tracks, for manual subtitles and auto-captions respectively */
-  subtitles: Record<string, CaptionTrack[]>
-  autoCaptions: Record<string, CaptionTrack[]>
 }
 
-/** One yt-dlp call gives us duration, live status, and caption track URLs. */
+/** Lightweight metadata from the watch page (no media layer, no yt-dlp). */
 export async function fetchVideoData(url: string): Promise<VideoData> {
-  const { stdout } = await retry(
-    () =>
-      pexec('yt-dlp', ['--skip-download', '--no-warnings', '-J', url], {
-        maxBuffer: 1024 * 1024 * 128,
-        timeout: 120_000,
-      }),
-    { tries: 3, baseMs: 3000, label: 'yt-dlp' },
-  )
-  const j = JSON.parse(stdout) as Record<string, unknown>
-  return {
-    meta: {
-      id: String(j.id ?? ''),
-      title: (j.title as string) ?? null,
-      channel: (j.channel as string) ?? (j.uploader as string) ?? null,
-      durationSeconds: typeof j.duration === 'number' ? Math.round(j.duration as number) : null,
-      liveStatus: (j.live_status as string) ?? null,
-    },
-    subtitles: (j.subtitles as Record<string, CaptionTrack[]>) ?? {},
-    autoCaptions: (j.automatic_captions as Record<string, CaptionTrack[]>) ?? {},
+  const id = parseVideoId(url)
+  if (!id) throw new Error(`Could not parse a video id from: ${url}`)
+  return { meta: await fetchMeta(id) }
+}
+
+async function fetchMeta(id: string): Promise<VideoMeta> {
+  const base: VideoMeta = { id, title: null, channel: null, durationSeconds: null, liveStatus: 'not_live' }
+  try {
+    const html = await fetchText(`https://www.youtube.com/watch?v=${id}`)
+    const json = extractBalancedJson(html, 'ytInitialPlayerResponse')
+    if (!json) return base
+    const pr = JSON.parse(json) as { videoDetails?: Record<string, unknown> }
+    const vd = pr.videoDetails ?? {}
+    return {
+      id,
+      title: (vd.title as string) ?? null,
+      channel: (vd.author as string) ?? null,
+      durationSeconds: vd.lengthSeconds ? Number(vd.lengthSeconds) : null,
+      liveStatus: vd.isLive ? 'is_live' : vd.isUpcoming ? 'is_upcoming' : 'not_live',
+    }
+  } catch {
+    // Watch page blocked/changed — proceed; the long-form filter just fails open.
+    return base
   }
 }
 
 const MAX_TRANSCRIPT_CHARS = 300_000
 
-/**
- * Pick the best caption track (manual EN > auto EN > any manual > any auto),
- * fetch it, and return clean plain text. Returns null when no captions exist.
- */
+/** Fetch captions via youtube-transcript (watch page -> caption tracks -> timedtext). */
 export async function getTranscript(data: VideoData): Promise<string | null> {
-  const track = pickTrack(data.subtitles) ?? pickTrack(data.autoCaptions)
-  if (!track) return null
-
-  const res = await fetch(track.url, {
-    headers: { 'user-agent': 'Mozilla/5.0 (compatible; PodcastDigestBot/1.0)' },
-  })
-  if (!res.ok) throw new Error(`Caption fetch HTTP ${res.status}`)
-  const body = await res.text()
-
-  let text = track.ext === 'json3' ? json3ToText(body) : vttToText(body)
-  text = text.replace(/\s+/g, ' ').trim()
-  if (!text) return null
-  if (text.length > MAX_TRANSCRIPT_CHARS) {
-    text = text.slice(0, MAX_TRANSCRIPT_CHARS) + ' …[transcript truncated]'
-  }
-  return text
-}
-
-function pickTrack(obj: Record<string, CaptionTrack[]>): CaptionTrack | null {
-  const langs = Object.keys(obj)
-  if (langs.length === 0) return null
-  const en = langs.find((l) => l.toLowerCase().startsWith('en'))
-  const tracks = obj[en ?? langs[0]]
-  if (!tracks || tracks.length === 0) return null
-  return (
-    tracks.find((t) => t.ext === 'json3') ??
-    tracks.find((t) => t.ext === 'vtt') ??
-    tracks.find((t) => t.ext === 'srv3') ??
-    tracks[0]
-  )
-}
-
-function json3ToText(body: string): string {
   try {
-    const j = JSON.parse(body) as { events?: { segs?: { utf8?: string }[] }[] }
-    return (j.events ?? [])
-      .map((e) => (e.segs ?? []).map((s) => s.utf8 ?? '').join(''))
+    const items = await retry(() => YoutubeTranscript.fetchTranscript(data.meta.id), {
+      tries: 3,
+      baseMs: 2000,
+      label: 'youtube-transcript',
+    })
+    if (!items || items.length === 0) return null
+    let text = items
+      .map((i) => decodeEntities(i.text))
       .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!text) return null
+    if (text.length > MAX_TRANSCRIPT_CHARS) text = `${text.slice(0, MAX_TRANSCRIPT_CHARS)} …[transcript truncated]`
+    return text
   } catch {
-    return ''
+    // captions disabled / unavailable / blocked -> NoTranscriptYet upstream
+    return null
   }
 }
 
-function vttToText(body: string): string {
-  const out: string[] = []
-  let prev = ''
-  for (const rawLine of body.split('\n')) {
-    const line = rawLine.trim()
-    if (!line || line === 'WEBVTT') continue
-    if (line.includes('-->')) continue
-    if (/^\d+$/.test(line)) continue
-    if (/^(NOTE|Kind:|Language:)/.test(line)) continue
-    const clean = line.replace(/<[^>]+>/g, '').trim() // strip <00:00:00.000> / <c> tags
-    if (!clean || clean === prev) continue
-    out.push(clean)
-    prev = clean
+async function fetchText(url: string): Promise<string> {
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), 20_000)
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+        'accept-language': 'en-US,en;q=0.9',
+      },
+      signal: ac.signal,
+    })
+    if (!res.ok) throw new Error(`watch page HTTP ${res.status}`)
+    return await res.text()
+  } finally {
+    clearTimeout(timer)
   }
-  return out.join(' ')
+}
+
+/** Extract the first balanced {...} object following a marker (e.g. ytInitialPlayerResponse). */
+function extractBalancedJson(html: string, marker: string): string | null {
+  const m = html.indexOf(marker)
+  if (m === -1) return null
+  const start = html.indexOf('{', m)
+  if (start === -1) return null
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let j = start; j < html.length; j++) {
+    const c = html[j]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+    } else if (c === '"') inStr = true
+    else if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return html.slice(start, j + 1)
+    }
+  }
+  return null
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;#39;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;quot;/g, '"')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
 }
