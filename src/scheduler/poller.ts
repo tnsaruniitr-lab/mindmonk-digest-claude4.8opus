@@ -1,0 +1,74 @@
+import Parser from 'rss-parser'
+import type { ChannelRow } from '../types'
+import { listChannels, markChannelChecked } from '../services/channels'
+import { enqueueVideo, videoExists } from '../services/videos'
+import { feedUrl, parseVideoId } from '../util/youtube'
+import { log } from '../util/logger'
+
+const parser = new Parser({ timeout: 30_000 })
+
+function itemVideoId(item: { link?: string; id?: string }): string | null {
+  return parseVideoId(item.link ?? '') ?? (item.id ? item.id.split(':').pop() ?? null : null)
+}
+
+let polling = false
+
+/** Poll every active channel's RSS feed and enqueue genuinely-new uploads. */
+export async function runPoller(): Promise<void> {
+  if (polling) return // guard against overlapping cron ticks / manual /check
+  polling = true
+  try {
+    const channels = await listChannels(true)
+    for (const ch of channels) {
+      try {
+        await pollChannel(ch)
+      } catch (e) {
+        log.error(`Poll failed for ${ch.youtube_channel_id}`, String(e))
+      }
+    }
+  } finally {
+    polling = false
+  }
+}
+
+async function pollChannel(ch: ChannelRow): Promise<void> {
+  const feed = await parser.parseURL(feedUrl(ch.youtube_channel_id))
+  // Only treat uploads published AFTER the channel was added as "new" — avoids
+  // dumping the whole back catalogue on first poll.
+  const since = new Date(ch.created_at).getTime()
+  let queued = 0
+  for (const item of feed.items) {
+    const vid = itemVideoId(item)
+    if (!vid) continue
+    const pub = item.isoDate ? new Date(item.isoDate).getTime() : 0
+    if (pub <= since) continue
+    const row = await enqueueVideo({
+      videoId: vid,
+      channelId: ch.id,
+      title: item.title ?? null,
+      publishedAt: item.isoDate ?? null,
+    })
+    if (row) queued++
+  }
+  if (queued) log.info(`${ch.title ?? ch.youtube_channel_id}: queued ${queued} new episode(s)`)
+  await markChannelChecked(ch.id)
+}
+
+/** Queue the latest N items from a channel regardless of age (used on /add). */
+export async function backfillLatest(ch: ChannelRow, count = 1): Promise<number> {
+  const feed = await parser.parseURL(feedUrl(ch.youtube_channel_id))
+  let n = 0
+  for (const item of feed.items.slice(0, count)) {
+    const vid = itemVideoId(item)
+    if (!vid) continue
+    if (await videoExists(vid)) continue
+    await enqueueVideo({
+      videoId: vid,
+      channelId: ch.id,
+      title: item.title ?? null,
+      publishedAt: item.isoDate ?? null,
+    })
+    n++
+  }
+  return n
+}

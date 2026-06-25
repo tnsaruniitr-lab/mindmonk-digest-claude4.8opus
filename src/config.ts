@@ -1,0 +1,42 @@
+import 'dotenv/config'
+import { z } from 'zod'
+
+const Env = z.object({
+  TELEGRAM_BOT_TOKEN: z.string().min(1),
+  TELEGRAM_CHAT_ID: z.string().min(1),
+
+  DATABASE_URL: z.string().min(1),
+  DATABASE_SSL: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
+
+  ANTHROPIC_API_KEY: z.string().min(1),
+  ANTHROPIC_MODEL: z.string().default('claude-opus-4-8'),
+
+  GRADER_PROVIDER: z.enum(['openai-compatible', 'anthropic']).default('openai-compatible'),
+  GRADER_API_KEY: z.string().default('__REPLACE_ME__'),
+  GRADER_BASE_URL: z.string().url().default('https://openrouter.ai/api/v1'),
+  GRADER_MODEL: z.string().default('openai/gpt-4o'),
+
+  MIN_DURATION_MINUTES: z.coerce.number().int().positive().default(20),
+  POLL_CRON: z.string().default('*/15 * * * *'),
+  WORKER_CRON: z.string().default('*/3 * * * *'),
+  BACKFILL_ON_ADD: z.coerce.number().default(1),
+  SUMMARY_LANGUAGE: z.string().default('English'),
+})
+
+const parsed = Env.safeParse(process.env)
+if (!parsed.success) {
+  // eslint-disable-next-line no-console
+  console.error('❌ Invalid environment configuration. Check your .env against .env.example:')
+  // eslint-disable-next-line no-console
+  console.error(parsed.error.flatten().fieldErrors)
+  process.exit(1)
+}
+
+export const config = parsed.data
+
+/** True only when a real grader key has been supplied (not the placeholder). */
+export const graderConfigured =
+  config.GRADER_API_KEY.length > 0 && config.GRADER_API_KEY !== '__REPLACE_ME__'
