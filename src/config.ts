@@ -24,6 +24,12 @@ const Env = z.object({
   WORKER_CRON: z.string().default('*/3 * * * *'),
   BACKFILL_ON_ADD: z.coerce.number().default(1),
   SUMMARY_LANGUAGE: z.string().default('English'),
+
+  // --- Transcript engine: audio -> Groq Whisper (via yt-dlp + a residential proxy) ---
+  GROQ_API_KEY: z.string().default(''),
+  GROQ_MODEL: z.string().default('whisper-large-v3-turbo'),
+  YT_PROXY: z.string().default(''), // residential/ISP proxy, e.g. http://user:pass@host:port
+  YT_PLAYER_CLIENT: z.string().default('android_vr'), // PO-token-free client that dodges SABR
 })
 
 const parsed = Env.safeParse(process.env)
@@ -40,3 +46,6 @@ export const config = parsed.data
 /** True only when a real grader key has been supplied (not the placeholder). */
 export const graderConfigured =
   config.GRADER_API_KEY.length > 0 && config.GRADER_API_KEY !== '__REPLACE_ME__'
+
+/** True when audio→Groq transcription is configured. */
+export const audioAsrEnabled = config.GROQ_API_KEY.length > 0
