@@ -7,6 +7,7 @@ import { getMinDurationMinutes, setSetting } from '../services/settings'
 import { claimById, enqueueVideo, getVideoByVideoId, resetVideo, setVideoStatus, statusCounts } from '../services/videos'
 import { backfillLatest, latestVideo, runPoller } from '../scheduler/poller'
 import { NoTranscriptYet, processVideo } from '../pipeline/process-video'
+import { TranscriptRateLimited } from '../youtube/ytdlp'
 import { parseVideoId, resolveChannel } from '../util/youtube'
 
 /** Everything after the first space of a command message. */
@@ -47,9 +48,18 @@ async function runVideoNow(
       await ctx.reply(`Skipped (${res.reason}).`)
     }
   } catch (e) {
+    if (e instanceof TranscriptRateLimited) {
+      // The audio downloaded fine — transcription is just throttled. Leave it
+      // queued (NOT failed) so the worker delivers it once the quota frees up.
+      await setVideoStatus(row.id, { status: 'pending', skip_reason: 'rate_limited' })
+      await ctx.reply(
+        '⏳ Transcription is rate-limited right now (Groq free-tier audio cap — ~2h of audio/hour). I’ve queued it; your digest will arrive automatically within the hour. No need to resend.',
+      )
+      return
+    }
     await setVideoStatus(row.id, { status: 'failed', skip_reason: String(e).slice(0, 200), markProcessed: true })
     if (e instanceof NoTranscriptYet) {
-      await ctx.reply('No captions/transcript are available for that video, so I can’t summarize it.')
+      await ctx.reply('Couldn’t get a usable transcript for that video — captions are unavailable and audio transcription returned nothing.')
     } else {
       await ctx.reply('Error: ' + String(e).slice(0, 300))
     }

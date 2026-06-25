@@ -43,8 +43,10 @@ export async function processVideo(
   }
 
   // --- transcript ---
+  // getTranscript throws TranscriptRateLimited on a quota throttle (recoverable,
+  // handled upstream); a null here means no usable transcript was produced.
   const transcript = await getTranscript(data)
-  if (!transcript) throw new NoTranscriptYet('captions not available yet')
+  if (!transcript) throw new NoTranscriptYet('no transcript produced')
 
   // --- 4-section pipeline ---
   const extract = await extractInsights({ title, channel: meta.channel, transcript })

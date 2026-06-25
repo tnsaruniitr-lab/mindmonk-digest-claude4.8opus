@@ -1,6 +1,7 @@
 import type { VideoRow } from '../types'
 import { claimNextPending, reapStale, setVideoStatus } from '../services/videos'
 import { NoTranscriptYet, processVideo } from '../pipeline/process-video'
+import { TranscriptRateLimited } from '../youtube/ytdlp'
 import { log } from '../util/logger'
 
 const PER_TICK = 4
@@ -45,7 +46,13 @@ export async function processOne(v: VideoRow): Promise<void> {
       log.info(`Skipped ${v.video_id}: ${res.reason}`)
     }
   } catch (err) {
-    if (err instanceof NoTranscriptYet) {
+    if (err instanceof TranscriptRateLimited) {
+      // Audio downloaded fine; the ASR provider's hourly quota is just full.
+      // Stay pending and keep retrying — the rolling window frees up on its own.
+      // Don't touch the attempt counters, so a quota stall never "gives up".
+      await setVideoStatus(v.id, { status: 'pending', skip_reason: 'rate_limited' })
+      log.warn(`Transcription rate-limited; re-queued ${v.video_id}`)
+    } else if (err instanceof NoTranscriptYet) {
       // Transcript-wait retries use their OWN counter, separate from hard failures.
       if (v.transcript_attempts + 1 >= MAX_ATTEMPTS_TRANSCRIPT) {
         await setVideoStatus(v.id, {
