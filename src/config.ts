@@ -34,6 +34,10 @@ const Env = z.object({
   // --- Transcript fallback: OpenAI Whisper, used only when Groq is rate-limited ---
   OPENAI_API_KEY: z.string().default(''), // platform.openai.com key (direct, not OpenRouter)
   OPENAI_TRANSCRIBE_MODEL: z.string().default('whisper-1'), // or gpt-4o-mini-transcribe (cheaper)
+
+  // --- Transcript Tier 0: Supadata managed API (no proxy/yt-dlp/download) -------
+  // When set, it's tried FIRST; the audio chain above stays intact as the fallback.
+  SUPADATA_API_KEY: z.string().default(''),
 })
 
 const parsed = Env.safeParse(process.env)
@@ -56,3 +60,6 @@ export const audioAsrEnabled = config.GROQ_API_KEY.length > 0
 
 /** True when an OpenAI Whisper fallback is configured (used when Groq is throttled). */
 export const transcriptFallbackEnabled = config.OPENAI_API_KEY.length > 0
+
+/** True when Supadata (managed transcript, Tier 0) is configured. Tried before the audio chain. */
+export const supadataEnabled = config.SUPADATA_API_KEY.length > 0

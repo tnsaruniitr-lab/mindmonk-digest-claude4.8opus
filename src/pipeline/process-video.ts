@@ -1,7 +1,8 @@
 import { query } from '../db/db'
-import { config, graderConfigured } from '../config'
+import { config, graderConfigured, supadataEnabled } from '../config'
 import type { GradeResult, VideoRow } from '../types'
 import { fetchVideoData, getTranscript } from '../youtube/ytdlp'
+import { supadataTranscript } from '../youtube/supadata'
 import { getMinDurationMinutes } from '../services/settings'
 import { getProfile } from '../services/profile'
 import { deliver } from '../services/delivery'
@@ -42,10 +43,17 @@ export async function processVideo(
     }
   }
 
-  // --- transcript ---
-  // getTranscript throws TranscriptRateLimited on a quota throttle (recoverable,
-  // handled upstream); a null here means no usable transcript was produced.
-  const transcript = await getTranscript(data)
+  // --- transcript: 3-tier waterfall ---
+  // Tier 0: Supadata (managed; no proxy/yt-dlp/download). Tried first when configured;
+  // sidesteps IP blocks, SABR, 403s and proxy-IP burn. Falls through on any failure.
+  let transcript: string | null = null
+  if (supadataEnabled) {
+    transcript = await supadataTranscript(meta.id)
+    if (transcript) log.info(`Transcript via Supadata: ${meta.id}`)
+  }
+  // Tier 1+2: yt-dlp audio -> ffmpeg -> Groq -> OpenAI. Throws TranscriptRateLimited
+  // on a quota throttle (recoverable, handled upstream); null = no usable transcript.
+  if (!transcript) transcript = await getTranscript(data)
   if (!transcript) throw new NoTranscriptYet('no transcript produced')
 
   // --- 4-section pipeline ---
