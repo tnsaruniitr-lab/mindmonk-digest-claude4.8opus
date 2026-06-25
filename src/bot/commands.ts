@@ -1,18 +1,59 @@
+import { Context } from 'telegraf'
 import { bot } from './bot'
 import { config, graderConfigured } from '../config'
 import { addChannel, listChannels, removeChannel } from '../services/channels'
 import { getProfile, setProfile } from '../services/profile'
 import { getMinDurationMinutes, setSetting } from '../services/settings'
-import { claimById, enqueueVideo, getVideoByVideoId, resetVideo, statusCounts } from '../services/videos'
-import { backfillLatest, runPoller } from '../scheduler/poller'
-import { processOne } from '../scheduler/worker'
-import { parseVideoId } from '../util/youtube'
+import { claimById, enqueueVideo, getVideoByVideoId, resetVideo, setVideoStatus, statusCounts } from '../services/videos'
+import { backfillLatest, latestVideo, runPoller } from '../scheduler/poller'
+import { NoTranscriptYet, processVideo } from '../pipeline/process-video'
+import { parseVideoId, resolveChannel } from '../util/youtube'
 
 /** Everything after the first space of a command message. */
 function arg(text: string | undefined): string {
   if (!text) return ''
   const sp = text.indexOf(' ')
   return sp === -1 ? '' : text.slice(sp + 1).trim()
+}
+
+/**
+ * Summarize one video on demand and deliver its digest. The long-form filter
+ * is bypassed (force) — if you explicitly ask for a video, you get it, any length.
+ */
+async function runVideoNow(
+  ctx: Context,
+  videoId: string,
+  meta: { channelId?: string | null; title?: string | null; publishedAt?: string | null } = {},
+): Promise<void> {
+  let row = await getVideoByVideoId(videoId)
+  if (!row) row = await enqueueVideo({ videoId, channelId: meta.channelId ?? null, title: meta.title ?? null, publishedAt: meta.publishedAt ?? null })
+  if (!row) row = await getVideoByVideoId(videoId)
+  if (!row) {
+    await ctx.reply('Could not create the video record.')
+    return
+  }
+  await resetVideo(row.id)
+  const claimed = await claimById(row.id) // atomic — won't race the worker
+  if (!claimed) {
+    await ctx.reply('That video is already being processed — hang tight.')
+    return
+  }
+  try {
+    const res = await processVideo(claimed, { force: true })
+    if (res.kind === 'delivered') {
+      await setVideoStatus(row.id, { status: 'done', markProcessed: true, is_long_form: true })
+    } else {
+      await setVideoStatus(row.id, { status: 'skipped', skip_reason: res.reason, markProcessed: true })
+      await ctx.reply(`Skipped (${res.reason}).`)
+    }
+  } catch (e) {
+    await setVideoStatus(row.id, { status: 'failed', skip_reason: String(e).slice(0, 200), markProcessed: true })
+    if (e instanceof NoTranscriptYet) {
+      await ctx.reply('No captions/transcript are available for that video, so I can’t summarize it.')
+    } else {
+      await ctx.reply('Error: ' + String(e).slice(0, 300))
+    }
+  }
 }
 
 const HELP = `🎙️ <b>Podcast Digest Bot</b>
@@ -30,7 +71,8 @@ I watch your favourite YouTube channels and, when they publish a new long-form e
 /profile — show the profile used for section ④
 /setprofile &lt;text&gt; — update your profile
 /minduration &lt;minutes&gt; — long-form threshold (now ${'{min}'})
-/test &lt;video url&gt; — run the pipeline on one video now
+/fetch &lt;video url&gt; — summarize any video right now (any length)
+/channel &lt;channel url&gt; — summarize a channel's latest video
 /check — check all channels for new episodes now
 /status — counts &amp; config
 /grader — grader configuration`
@@ -104,22 +146,33 @@ bot.command('check', async (ctx) => {
   await ctx.reply('Done — any new episodes are queued and will be processed shortly.')
 })
 
+// Summarize any single video on demand. /test kept as an alias.
+bot.command('fetch', async (ctx) => {
+  const vid = parseVideoId(arg(ctx.message?.text))
+  if (!vid) return ctx.reply('Usage: /fetch <youtube video url or 11-char id>')
+  await ctx.reply('⏳ Summarizing that video now…')
+  await runVideoNow(ctx, vid)
+})
 bot.command('test', async (ctx) => {
-  const a = arg(ctx.message?.text)
-  const vid = parseVideoId(a)
+  const vid = parseVideoId(arg(ctx.message?.text))
   if (!vid) return ctx.reply('Usage: /test <youtube video url or 11-char id>')
-  await ctx.reply('⏳ Processing that episode now…')
+  await ctx.reply('⏳ Summarizing that video now…')
+  await runVideoNow(ctx, vid)
+})
+
+// Summarize the latest video on a channel (one-off — does not subscribe).
+bot.command('channel', async (ctx) => {
+  const a = arg(ctx.message?.text)
+  if (!a) return ctx.reply('Usage: /channel <channel url, @handle, or UC… id>')
+  await ctx.reply('🔎 Finding the latest video on that channel…')
   try {
-    let row = await getVideoByVideoId(vid)
-    if (!row) row = await enqueueVideo({ videoId: vid, channelId: null, title: null, publishedAt: null })
-    if (!row) row = await getVideoByVideoId(vid)
-    if (!row) return ctx.reply('Could not create the video record.')
-    await resetVideo(row.id)
-    const claimed = await claimById(row.id) // atomic — won't race the worker
-    if (!claimed) return ctx.reply('That episode is already being processed.')
-    await processOne(claimed)
+    const ch = await resolveChannel(a)
+    const latest = await latestVideo(ch.channelId)
+    if (!latest) return ctx.reply('Could not find any videos on that channel.')
+    await ctx.reply(`📺 Latest: ${latest.title ?? latest.videoId} — summarizing now…`)
+    await runVideoNow(ctx, latest.videoId, { title: latest.title, publishedAt: latest.publishedAt })
   } catch (e) {
-    await ctx.reply('Error: ' + String(e).slice(0, 300))
+    await ctx.reply('Could not fetch that channel: ' + String(e).slice(0, 300))
   }
 })
 

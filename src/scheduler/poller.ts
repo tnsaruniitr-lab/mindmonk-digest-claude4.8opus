@@ -54,6 +54,18 @@ async function pollChannel(ch: ChannelRow): Promise<void> {
   await markChannelChecked(ch.id)
 }
 
+/** Newest video on a channel from its RSS feed (used on /channel). */
+export async function latestVideo(
+  channelId: string,
+): Promise<{ videoId: string; title: string | null; publishedAt: string | null } | null> {
+  const feed = await parser.parseURL(feedUrl(channelId))
+  for (const item of feed.items) {
+    const vid = itemVideoId(item)
+    if (vid) return { videoId: vid, title: item.title ?? null, publishedAt: item.isoDate ?? null }
+  }
+  return null
+}
+
 /** Queue the latest N items from a channel regardless of age (used on /add). */
 export async function backfillLatest(ch: ChannelRow, count = 1): Promise<number> {
   const feed = await parser.parseURL(feedUrl(ch.youtube_channel_id))

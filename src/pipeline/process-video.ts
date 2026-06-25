@@ -16,7 +16,10 @@ export class NoTranscriptYet extends Error {}
 
 export type ProcessResult = { kind: 'delivered' } | { kind: 'skipped'; reason: string }
 
-export async function processVideo(video: VideoRow): Promise<ProcessResult> {
+export async function processVideo(
+  video: VideoRow,
+  opts: { force?: boolean } = {},
+): Promise<ProcessResult> {
   const data = await fetchVideoData(video.url)
   const meta = data.meta
   const dur = meta.durationSeconds
@@ -24,17 +27,19 @@ export async function processVideo(video: VideoRow): Promise<ProcessResult> {
 
   await query('update videos set duration_seconds = $1, title = $2 where id = $3', [dur, title, video.id])
 
-  // --- long-form filter ---
-  if (meta.liveStatus === 'is_live' || meta.liveStatus === 'is_upcoming') {
-    return { kind: 'skipped', reason: 'live_or_upcoming' }
-  }
-  if (meta.liveStatus === 'post_live') {
-    // Stream just ended — duration/captions are still finalizing. Retry later.
-    throw new NoTranscriptYet('stream just ended; finalizing')
-  }
-  const minMin = await getMinDurationMinutes()
-  if (dur != null && dur < minMin * 60) {
-    return { kind: 'skipped', reason: `too_short_under_${minMin}m` }
+  // --- long-form filter (skipped for on-demand /fetch & /channel via force) ---
+  if (!opts.force) {
+    if (meta.liveStatus === 'is_live' || meta.liveStatus === 'is_upcoming') {
+      return { kind: 'skipped', reason: 'live_or_upcoming' }
+    }
+    if (meta.liveStatus === 'post_live') {
+      // Stream just ended — duration/captions are still finalizing. Retry later.
+      throw new NoTranscriptYet('stream just ended; finalizing')
+    }
+    const minMin = await getMinDurationMinutes()
+    if (dur != null && dur < minMin * 60) {
+      return { kind: 'skipped', reason: `too_short_under_${minMin}m` }
+    }
   }
 
   // --- transcript ---
