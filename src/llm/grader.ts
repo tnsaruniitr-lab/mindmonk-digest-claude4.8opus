@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { config, graderConfigured } from '../config'
 import { retry } from '../util/retry'
+import { assertUnderDailyCap, recordLlmUsage } from '../cost/ledger'
 
 /**
  * The "specified LLM" that produces the unbiased grade (Section 3). Configurable
@@ -12,6 +13,7 @@ export async function callGrader(opts: {
   maxTokens?: number
 }): Promise<string> {
   if (!graderConfigured) throw new Error('GRADER_API_KEY is not set (placeholder still in .env)')
+  await assertUnderDailyCap()
   if (config.GRADER_PROVIDER === 'anthropic') return anthropicGrader(opts)
   return openaiCompatible(opts)
 }
@@ -41,9 +43,18 @@ async function openaiCompatible(opts: { system: string; user: string; maxTokens?
       if (!res.ok) {
         throw new Error(`Grader HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
       }
-      const j = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+      const j = (await res.json()) as {
+        choices?: { message?: { content?: string } }[]
+        usage?: { prompt_tokens?: number; completion_tokens?: number }
+      }
       const text = j.choices?.[0]?.message?.content
       if (!text) throw new Error('Grader returned no content')
+      await recordLlmUsage({
+        provider: 'openai-compatible',
+        model: config.GRADER_MODEL,
+        inputTokens: j.usage?.prompt_tokens ?? 0,
+        outputTokens: j.usage?.completion_tokens ?? 0,
+      })
       return text
     },
     { tries: 3, baseMs: 2000, label: 'grader' },
@@ -68,5 +79,11 @@ async function anthropicGrader(opts: { system: string; user: string; maxTokens?:
     .join('\n')
     .trim()
   if (!text) throw new Error('Grader returned an empty response')
+  await recordLlmUsage({
+    provider: 'anthropic',
+    model: config.GRADER_MODEL,
+    inputTokens: res.usage.input_tokens,
+    outputTokens: res.usage.output_tokens,
+  })
   return text
 }

@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../config'
 import { retry } from '../util/retry'
+import { assertUnderDailyCap, recordLlmUsage } from '../cost/ledger'
 
 const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
@@ -10,6 +11,7 @@ export async function callClaude(opts: {
   user: string
   maxTokens?: number
 }): Promise<string> {
+  await assertUnderDailyCap()
   const res = await retry(
     () =>
       client.messages.create({
@@ -20,6 +22,12 @@ export async function callClaude(opts: {
       }),
     { tries: 3, baseMs: 2000, label: 'claude' },
   )
+  await recordLlmUsage({
+    provider: 'anthropic',
+    model: config.ANTHROPIC_MODEL,
+    inputTokens: res.usage.input_tokens,
+    outputTokens: res.usage.output_tokens,
+  })
 
   const text = res.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')

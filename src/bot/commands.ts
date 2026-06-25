@@ -8,6 +8,8 @@ import { claimById, enqueueVideo, getVideoByVideoId, resetVideo, setVideoStatus,
 import { backfillLatest, latestVideo, runPoller } from '../scheduler/poller'
 import { NoTranscriptYet, processVideo } from '../pipeline/process-video'
 import { TranscriptRateLimited } from '../youtube/ytdlp'
+import { DailySpendCapExceeded } from '../cost/ledger'
+import { scrub } from '../util/logger'
 import { parseVideoId, resolveChannel } from '../util/youtube'
 
 /** Everything after the first space of a command message. */
@@ -57,11 +59,20 @@ async function runVideoNow(
       )
       return
     }
-    await setVideoStatus(row.id, { status: 'failed', skip_reason: String(e).slice(0, 200), markProcessed: true })
+    if (e instanceof DailySpendCapExceeded) {
+      // Transient daily cap — re-queue (NOT failed) so the worker delivers it once the
+      // cap resets; do NOT markProcessed (the worker only ever claims 'pending').
+      await setVideoStatus(row.id, { status: 'pending', skip_reason: 'spend_cap' })
+      await ctx.reply(
+        '💸 Daily spend cap reached — I’ve queued this; your digest will arrive automatically after the cap resets (next server day). No need to resend.',
+      )
+      return
+    }
+    await setVideoStatus(row.id, { status: 'failed', skip_reason: scrub(String(e)).slice(0, 200), markProcessed: true })
     if (e instanceof NoTranscriptYet) {
       await ctx.reply('Couldn’t get a usable transcript for that video — captions are unavailable and audio transcription returned nothing.')
     } else {
-      await ctx.reply('Error: ' + String(e).slice(0, 300))
+      await ctx.reply('Error: ' + scrub(String(e)).slice(0, 300))
     }
   }
 }
@@ -108,7 +119,7 @@ bot.command('add', async (ctx) => {
       `✅ Added: ${ch.title ?? ch.handle ?? ch.youtube_channel_id}.${note}\nYou'll get a digest whenever it publishes a new long-form episode.`,
     )
   } catch (e) {
-    await ctx.reply('Could not add that channel: ' + String(e).slice(0, 300))
+    await ctx.reply('Could not add that channel: ' + scrub(String(e)).slice(0, 300))
   }
 })
 
@@ -182,7 +193,7 @@ bot.command('channel', async (ctx) => {
     await ctx.reply(`📺 Latest: ${latest.title ?? latest.videoId} — summarizing now…`)
     await runVideoNow(ctx, latest.videoId, { title: latest.title, publishedAt: latest.publishedAt })
   } catch (e) {
-    await ctx.reply('Could not fetch that channel: ' + String(e).slice(0, 300))
+    await ctx.reply('Could not fetch that channel: ' + scrub(String(e)).slice(0, 300))
   }
 })
 

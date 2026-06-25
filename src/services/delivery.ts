@@ -1,7 +1,7 @@
 import { bot } from '../bot/bot'
 import { config } from '../config'
 import { query } from '../db/db'
-import { log } from '../util/logger'
+import { log, scrub } from '../util/logger'
 
 const TELEGRAM_LIMIT = 4096
 
@@ -60,7 +60,7 @@ export async function deliver(html: string, videoDbId: string | null): Promise<v
     await logDelivery(videoDbId, messageIds, true, null)
   } catch (err) {
     log.error('Telegram delivery failed', String(err))
-    await logDelivery(videoDbId, messageIds, false, String(err))
+    await logDelivery(videoDbId, messageIds, false, scrub(String(err)))
     throw err
   }
 }

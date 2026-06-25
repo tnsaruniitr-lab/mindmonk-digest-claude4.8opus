@@ -11,6 +11,7 @@ import { gradeIdeas } from './grade'
 import { personalize } from './personalize'
 import { renderDigest } from './render'
 import { log } from '../util/logger'
+import { assertUnderDailyCap, recordSupadataUsage, DailySpendCapExceeded } from '../cost/ledger'
 
 /** Thrown when captions aren't available yet (retryable — auto-captions can lag). */
 export class NoTranscriptYet extends Error {}
@@ -21,6 +22,9 @@ export async function processVideo(
   video: VideoRow,
   opts: { force?: boolean } = {},
 ): Promise<ProcessResult> {
+  // Pre-flight: if the daily spend cap is already hit, pause before ANY work
+  // (proxy metadata fetch, transcript, LLM) — avoids half-spends and churn.
+  await assertUnderDailyCap()
   const data = await fetchVideoData(video.url)
   const meta = data.meta
   const dur = meta.durationSeconds
@@ -48,8 +52,12 @@ export async function processVideo(
   // sidesteps IP blocks, SABR, 403s and proxy-IP burn. Falls through on any failure.
   let transcript: string | null = null
   if (supadataEnabled) {
+    await assertUnderDailyCap()
     transcript = await supadataTranscript(meta.id)
-    if (transcript) log.info(`Transcript via Supadata: ${meta.id}`)
+    if (transcript) {
+      log.info(`Transcript via Supadata: ${meta.id}`)
+      await recordSupadataUsage({ seconds: meta.durationSeconds ?? undefined, videoId: meta.id })
+    }
   }
   // Tier 1+2: yt-dlp audio -> ffmpeg -> Groq -> OpenAI. Throws TranscriptRateLimited
   // on a quota throttle (recoverable, handled upstream); null = no usable transcript.
@@ -64,6 +72,7 @@ export async function processVideo(
     try {
       grade = await gradeIdeas({ title, extract })
     } catch (e) {
+      if (e instanceof DailySpendCapExceeded) throw e // pause cleanly, don't degrade
       log.warn('grader failed; delivering without grade', String(e))
     }
   }

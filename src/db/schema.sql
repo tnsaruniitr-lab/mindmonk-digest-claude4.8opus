@@ -79,3 +79,18 @@ create table if not exists delivery_log (
   error        text,
   delivered_at timestamptz not null default now()
 );
+
+-- Spend ledger: one row per billable LLM / ASR call (Phase 0 cost kill-switch) -
+create table if not exists usage_events (
+  id            uuid primary key default gen_random_uuid(),
+  kind          text not null,            -- 'llm' | 'asr'
+  provider      text,                     -- anthropic | openai | groq | openai-compatible ...
+  model         text,
+  input_tokens  int,
+  output_tokens int,
+  audio_seconds int,
+  cost_usd      numeric(12,6) not null default 0,
+  video_id      text,                     -- youtube id (free text); null for non-video calls
+  created_at    timestamptz not null default now()
+);
+create index if not exists usage_events_created_idx on usage_events(created_at);

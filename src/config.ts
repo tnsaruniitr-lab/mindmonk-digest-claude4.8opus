@@ -38,6 +38,12 @@ const Env = z.object({
   // --- Transcript Tier 0: Supadata managed API (no proxy/yt-dlp/download) -------
   // When set, it's tried FIRST; the audio chain above stays intact as the fallback.
   SUPADATA_API_KEY: z.string().default(''),
+
+  // --- Cost guardrail (Phase 0 kill-switch) ------------------------------------
+  // Hard daily ceiling on estimated LLM + transcription spend (USD). When today's
+  // tracked spend reaches this, new expensive calls pause (jobs re-queue, no data
+  // loss) until the next day. 0 disables the guard.
+  GLOBAL_DAILY_SPEND_CAP_USD: z.coerce.number().nonnegative().default(25),
 })
 
 const parsed = Env.safeParse(process.env)

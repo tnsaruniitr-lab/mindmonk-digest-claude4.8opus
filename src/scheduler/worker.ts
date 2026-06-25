@@ -2,7 +2,8 @@ import type { VideoRow } from '../types'
 import { claimNextPending, reapStale, setVideoStatus } from '../services/videos'
 import { NoTranscriptYet, processVideo } from '../pipeline/process-video'
 import { TranscriptRateLimited } from '../youtube/ytdlp'
-import { log } from '../util/logger'
+import { DailySpendCapExceeded } from '../cost/ledger'
+import { log, scrub } from '../util/logger'
 
 const PER_TICK = 4
 const MAX_ATTEMPTS_PROCESS = 6 // hard failures (network/model) before giving up
@@ -22,15 +23,16 @@ export async function runWorker(): Promise<void> {
     for (let i = 0; i < PER_TICK; i++) {
       const v = await claimNextPending()
       if (!v) break
-      await processOne(v)
+      if ((await processOne(v)) === 'paused') break
     }
   } finally {
     running = false
   }
 }
 
-/** Process a single (already-claimed) video and set its final status. */
-export async function processOne(v: VideoRow): Promise<void> {
+/** Process a single (already-claimed) video and set its final status. Returns
+ *  'paused' when the global spend cap was hit, signalling the worker to stop the tick. */
+export async function processOne(v: VideoRow): Promise<'paused' | void> {
   try {
     const res = await processVideo(v)
     if (res.kind === 'delivered') {
@@ -46,7 +48,14 @@ export async function processOne(v: VideoRow): Promise<void> {
       log.info(`Skipped ${v.video_id}: ${res.reason}`)
     }
   } catch (err) {
-    if (err instanceof TranscriptRateLimited) {
+    if (err instanceof DailySpendCapExceeded) {
+      // Spend cap reached — pause, don't fail. Re-queue without burning the attempt
+      // budget so the video resumes once the daily window resets, and signal the
+      // worker to stop this tick (the cap is global; the rest would just hit it too).
+      await setVideoStatus(v.id, { status: 'pending', skip_reason: 'spend_cap' })
+      log.warn(`Daily spend cap hit; re-queued ${v.video_id} (no attempt bump)`)
+      return 'paused'
+    } else if (err instanceof TranscriptRateLimited) {
       // Audio downloaded fine; the ASR provider's hourly quota is just full.
       // Stay pending and keep retrying — the rolling window frees up on its own.
       // Don't touch the attempt counters, so a quota stall never "gives up".
@@ -72,7 +81,7 @@ export async function processOne(v: VideoRow): Promise<void> {
     } else if (v.attempts + 1 >= MAX_ATTEMPTS_PROCESS) {
       await setVideoStatus(v.id, {
         status: 'failed',
-        skip_reason: String(err).slice(0, 300),
+        skip_reason: scrub(String(err)).slice(0, 300),
         markProcessed: true,
         incAttempts: true,
       })

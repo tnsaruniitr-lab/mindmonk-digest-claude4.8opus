@@ -12,6 +12,8 @@ import { audioAsrEnabled, config, transcriptFallbackEnabled } from '../config'
 import { parseVideoId, videoUrl } from '../util/youtube'
 import { retry } from '../util/retry'
 import { log } from '../util/logger'
+import { assertUnderDailyCap, recordAsrUsage } from '../cost/ledger'
+import { estimateSecondsFromText } from '../cost/pricing'
 
 const pexec = promisify(execFile)
 
@@ -88,6 +90,8 @@ export async function getTranscript(data: VideoData): Promise<string | null> {
   if (Date.now() < groqCooldownUntil) {
     throw new TranscriptRateLimited('ASR quota recently exhausted; cooling down before re-downloading')
   }
+  // Pause before incurring a proxy-metered download + paid ASR if the daily cap is hit.
+  await assertUnderDailyCap()
   const dir = await mkdtemp(join(tmpdir(), 'mm-'))
   try {
     // 1. audio-only download (proxy + PO-token-free client)
@@ -109,10 +113,16 @@ export async function getTranscript(data: VideoData): Promise<string | null> {
       timeout: 180_000,
     })
 
-    // 3. transcribe (chunk if over the provider's size cap)
+    // 3. transcribe (chunk if over the provider's size cap). Track which provider
+    //    actually served it — Groq can 429 and fall back to (pricier) OpenAI mid-run.
     let text: string
+    let asrProvider: 'groq' | 'openai' = audioAsrEnabled ? 'groq' : 'openai'
+    let asrModel: string = audioAsrEnabled ? config.GROQ_MODEL : config.OPENAI_TRANSCRIBE_MODEL
     if ((await stat(mono)).size <= GROQ_MAX_BYTES) {
-      text = await transcribeFile(mono)
+      const r = await transcribeFile(mono)
+      text = r.text
+      asrProvider = r.provider
+      asrModel = r.model
     } else {
       const cdir = join(dir, 'chunks')
       await mkdir(cdir, { recursive: true })
@@ -123,13 +133,27 @@ export async function getTranscript(data: VideoData): Promise<string | null> {
       )
       const chunks = (await readdir(cdir)).filter((f) => f.endsWith('.mp3')).sort()
       const parts: string[] = []
-      for (const c of chunks) parts.push(await transcribeFile(join(cdir, c)))
+      let usedOpenai = false
+      for (const c of chunks) {
+        const r = await transcribeFile(join(cdir, c))
+        parts.push(r.text)
+        if (r.provider === 'openai') usedOpenai = true
+      }
       text = parts.join(' ')
+      // Conservative: if any chunk fell back to OpenAI, price the whole job at OpenAI.
+      asrProvider = usedOpenai ? 'openai' : 'groq'
+      asrModel = usedOpenai ? config.OPENAI_TRANSCRIBE_MODEL : config.GROQ_MODEL
     }
 
     text = text.replace(/\s+/g, ' ').trim()
     if (!text) return null
     if (text.length > MAX_TRANSCRIPT_CHARS) text = `${text.slice(0, MAX_TRANSCRIPT_CHARS)} …[transcript truncated]`
+    await recordAsrUsage({
+      provider: asrProvider,
+      model: asrModel,
+      seconds: data.meta.durationSeconds ?? estimateSecondsFromText(text),
+      videoId: data.meta.id,
+    })
     return text
   } catch (e) {
     // We only land here with TranscriptRateLimited when EVERY configured provider
@@ -180,14 +204,18 @@ async function groqTranscribe(filePath: string): Promise<string> {
  * throttled and no fallback is configured, the TranscriptRateLimited propagates so
  * the caller re-queues. Keeps steady-state cost on Groq, with burst resilience.
  */
-async function transcribeFile(filePath: string): Promise<string> {
-  if (!audioAsrEnabled) return openaiTranscribe(filePath) // OpenAI-only mode
+async function transcribeFile(
+  filePath: string,
+): Promise<{ text: string; provider: 'groq' | 'openai'; model: string }> {
+  if (!audioAsrEnabled) {
+    return { text: await openaiTranscribe(filePath), provider: 'openai', model: config.OPENAI_TRANSCRIBE_MODEL }
+  }
   try {
-    return await groqTranscribe(filePath)
+    return { text: await groqTranscribe(filePath), provider: 'groq', model: config.GROQ_MODEL }
   } catch (e) {
     if (e instanceof TranscriptRateLimited && transcriptFallbackEnabled) {
       log.warn('Groq rate-limited — falling back to OpenAI Whisper', String(e))
-      return openaiTranscribe(filePath)
+      return { text: await openaiTranscribe(filePath), provider: 'openai', model: config.OPENAI_TRANSCRIBE_MODEL }
     }
     throw e
   }
