@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { callClaude } from '../llm/claude'
 import { structured } from '../util/structured'
-import { config } from '../config'
+import { config, extractModel } from '../config'
 import type { ExtractResult } from '../types'
 
 const Schema = z.object({
@@ -40,6 +40,7 @@ ${input.transcript}`
       system: strict ? `${system}\nReturn ONLY the JSON object — no prose, no fences.` : system,
       user,
       maxTokens: 6000,
+      model: extractModel,
     }),
   )
 }

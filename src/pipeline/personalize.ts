@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { callClaude } from '../llm/claude'
 import { structured } from '../util/structured'
-import { config } from '../config'
+import { config, personalizeModel } from '../config'
 import type { ExtractResult, PersonalizeResult } from '../types'
 
 const Schema = z.object({
@@ -47,6 +47,7 @@ Rules:
       system: strict ? `${system}\nReturn ONLY the JSON object — no prose, no fences.` : system,
       user,
       maxTokens: 3000,
+      model: personalizeModel,
     }),
   )
 }

@@ -10,12 +10,14 @@ export async function callClaude(opts: {
   system: string
   user: string
   maxTokens?: number
+  model?: string
 }): Promise<string> {
+  const model = opts.model || config.ANTHROPIC_MODEL
   await assertUnderDailyCap()
   const res = await retry(
     () =>
       client.messages.create({
-        model: config.ANTHROPIC_MODEL,
+        model,
         max_tokens: opts.maxTokens ?? 8000,
         system: opts.system,
         messages: [{ role: 'user', content: opts.user }],
@@ -24,7 +26,7 @@ export async function callClaude(opts: {
   )
   await recordLlmUsage({
     provider: 'anthropic',
-    model: config.ANTHROPIC_MODEL,
+    model,
     inputTokens: res.usage.input_tokens,
     outputTokens: res.usage.output_tokens,
   })

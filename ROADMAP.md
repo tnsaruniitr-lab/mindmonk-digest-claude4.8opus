@@ -34,15 +34,19 @@ leaking into logs.
 Compute the expensive per-video work once; cost scales with distinct videos, not
 users. Still single-user — a pure refactor, no tenancy risk.
 
-- Split `digests` → shared `video_digests` (transcript-derived ①②③, one row/video).
-- `transcripts(video_id)` cache — never re-transcribe a video_id.
-- Per-stage model knobs (EXTRACT / PERSONALIZE / GRADER); personalization on the
-  cheapest model. Supadata stays Tier 0. Wire Supadata calls into the ledger too.
+- Add shared `video_digests` (transcript-derived ①②③, one row/video) + `transcripts`
+  (never re-transcribe a video_id) as ADDITIVE cache tables. The destructive `digests`
+  split + per-user `user_deliveries` lands in P2 (it needs the tenancy migration).
+- Per-stage model knobs (`EXTRACT_MODEL` / `PERSONALIZE_MODEL`); personalization on the
+  cheapest model. Supadata stays Tier 0 and is already in the ledger (P0).
 
 **UAT**
-- [ ] Re-processing a cached video makes zero ASR/yt-dlp calls (verify via `usage_events`).
-- [ ] `video_digests` has exactly one row per video_id.
-- [ ] Digest output unchanged vs pre-refactor for a known video (snapshot).
+- [ ] A scheduled re-run of a cached video makes zero ASR/yt-dlp/extract calls (verify via `usage_events`).
+- [ ] `video_digests` + `transcripts` have exactly one row per video_id.
+- [ ] On-demand `/fetch` / `/test` recomputes ①②③ and overwrites the cached row, while reusing the
+      cached transcript (no re-ASR) — so prompt/model changes ARE reflected on re-test.
+- [ ] A video digested while the grader was OFF gets section ③ backfilled on its next run after
+      `GRADER_API_KEY` is set (no permanent grade-less lock-in).
 
 ## Phase 2 — Multi-tenancy (the spine)
 Many users, each with their own channels/profile/delivery, correct on ONE process.

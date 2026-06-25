@@ -13,6 +13,9 @@ const Env = z.object({
 
   ANTHROPIC_API_KEY: z.string().min(1),
   ANTHROPIC_MODEL: z.string().default('claude-opus-4-8'),
+  // Optional per-stage overrides (Phase 1 cost routing). Empty -> use ANTHROPIC_MODEL.
+  EXTRACT_MODEL: z.string().default(''), // sections ①② (shared, once per video)
+  PERSONALIZE_MODEL: z.string().default(''), // section ④ (per delivery; keep cheap)
 
   GRADER_PROVIDER: z.enum(['openai-compatible', 'anthropic']).default('openai-compatible'),
   GRADER_API_KEY: z.string().default('__REPLACE_ME__'),
@@ -56,6 +59,10 @@ if (!parsed.success) {
 }
 
 export const config = parsed.data
+
+/** Per-stage model resolution (Phase 1 cost routing). Empty override -> primary model. */
+export const extractModel = config.EXTRACT_MODEL || config.ANTHROPIC_MODEL
+export const personalizeModel = config.PERSONALIZE_MODEL || config.ANTHROPIC_MODEL
 
 /** True only when a real grader key has been supplied (not the placeholder). */
 export const graderConfigured =

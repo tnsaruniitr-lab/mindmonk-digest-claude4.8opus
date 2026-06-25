@@ -1,8 +1,10 @@
 import { query } from '../db/db'
-import { config, graderConfigured, supadataEnabled } from '../config'
-import type { GradeResult, VideoRow } from '../types'
+import { config, extractModel, graderConfigured, supadataEnabled } from '../config'
+import type { ExtractResult, GradeResult, VideoRow } from '../types'
 import { fetchVideoData, getTranscript } from '../youtube/ytdlp'
 import { supadataTranscript } from '../youtube/supadata'
+import { getCachedTranscript, saveTranscript } from '../services/transcripts'
+import { getVideoDigest, saveVideoDigest, updateVideoDigestGrade } from '../services/video-digests'
 import { getMinDurationMinutes } from '../services/settings'
 import { getProfile } from '../services/profile'
 import { deliver } from '../services/delivery'
@@ -47,34 +49,70 @@ export async function processVideo(
     }
   }
 
-  // --- transcript: 3-tier waterfall ---
-  // Tier 0: Supadata (managed; no proxy/yt-dlp/download). Tried first when configured;
-  // sidesteps IP blocks, SABR, 403s and proxy-IP burn. Falls through on any failure.
-  let transcript: string | null = null
-  if (supadataEnabled) {
-    await assertUnderDailyCap()
-    transcript = await supadataTranscript(meta.id)
-    if (transcript) {
-      log.info(`Transcript via Supadata: ${meta.id}`)
-      await recordSupadataUsage({ seconds: meta.durationSeconds ?? undefined, videoId: meta.id })
+  // --- transcript: cache → 3-tier waterfall (transcribe at most once). Immutable, so a
+  //     force recompute still reuses it — only ①②③/④ are recomputed, never re-paying ASR. ---
+  let transcript = await getCachedTranscript(video.video_id)
+  if (transcript) {
+    log.info(`Transcript via cache: ${video.video_id}`)
+  } else {
+    let source = ''
+    // Tier 0: Supadata (managed; no proxy/yt-dlp/download). Tried first when configured;
+    // sidesteps IP blocks, SABR, 403s and proxy-IP burn. Falls through on any failure.
+    if (supadataEnabled) {
+      await assertUnderDailyCap()
+      transcript = await supadataTranscript(meta.id)
+      if (transcript) {
+        source = 'supadata'
+        log.info(`Transcript via Supadata: ${meta.id}`)
+        await recordSupadataUsage({ seconds: meta.durationSeconds ?? undefined, videoId: meta.id })
+      }
     }
+    // Tier 1+2: yt-dlp audio -> ffmpeg -> Groq -> OpenAI. Throws TranscriptRateLimited
+    // on a quota throttle (recoverable, handled upstream); null = no usable transcript.
+    if (!transcript) {
+      transcript = await getTranscript(data)
+      if (transcript) source = 'audio'
+    }
+    if (!transcript) throw new NoTranscriptYet('no transcript produced')
+    await saveTranscript(video.video_id, transcript, source)
   }
-  // Tier 1+2: yt-dlp audio -> ffmpeg -> Groq -> OpenAI. Throws TranscriptRateLimited
-  // on a quota throttle (recoverable, handled upstream); null = no usable transcript.
-  if (!transcript) transcript = await getTranscript(data)
-  if (!transcript) throw new NoTranscriptYet('no transcript produced')
 
-  // --- 4-section pipeline ---
-  const extract = await extractInsights({ title, channel: meta.channel, transcript })
-
+  // --- ①②③ are pure functions of the transcript: compute once per video, cache, reuse ---
+  // On-demand (force) recomputes + overwrites; the scheduled path reuses the cache.
+  let extract: ExtractResult
   let grade: GradeResult | null = null
-  if (graderConfigured) {
-    try {
-      grade = await gradeIdeas({ title, extract })
-    } catch (e) {
-      if (e instanceof DailySpendCapExceeded) throw e // pause cleanly, don't degrade
-      log.warn('grader failed; delivering without grade', String(e))
+  const cachedDigest = opts.force ? null : await getVideoDigest(video.video_id)
+  if (cachedDigest) {
+    extract = cachedDigest.extract
+    grade = cachedDigest.grade
+    log.info(`Reusing cached ①②③ digest for ${video.video_id}`)
+    // Backfill ③ if it was cached without a grade (grader off/failed earlier) and the
+    // grader is now available — stops a grader-off→on flip from stranding section ③.
+    if (grade === null && graderConfigured) {
+      try {
+        grade = await gradeIdeas({ title, extract })
+        await updateVideoDigestGrade(video.video_id, grade, config.GRADER_MODEL)
+        log.info(`Backfilled section ③ grade for ${video.video_id}`)
+      } catch (e) {
+        if (e instanceof DailySpendCapExceeded) throw e
+        log.warn('grade backfill failed; delivering without grade', String(e))
+      }
     }
+  } else {
+    extract = await extractInsights({ title, channel: meta.channel, transcript })
+    if (graderConfigured) {
+      try {
+        grade = await gradeIdeas({ title, extract })
+      } catch (e) {
+        if (e instanceof DailySpendCapExceeded) throw e // pause cleanly, don't degrade
+        log.warn('grader failed; delivering without grade', String(e))
+      }
+    }
+    await saveVideoDigest(
+      video.video_id,
+      { extract, grade, extractModel, graderModel: graderConfigured ? config.GRADER_MODEL : null },
+      { overwrite: opts.force },
+    )
   }
 
   const profile = await getProfile()
@@ -101,8 +139,8 @@ export async function processVideo(
       grade ? JSON.stringify(grade) : null,
       JSON.stringify(personalizeRes),
       html,
-      config.ANTHROPIC_MODEL,
-      graderConfigured ? config.GRADER_MODEL : null,
+      cachedDigest?.extractModel ?? extractModel,
+      cachedDigest?.graderModel ?? (graderConfigured ? config.GRADER_MODEL : null),
     ],
   )
 

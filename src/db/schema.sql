@@ -94,3 +94,24 @@ create table if not exists usage_events (
   created_at    timestamptz not null default now()
 );
 create index if not exists usage_events_created_idx on usage_events(created_at);
+
+-- Per-video transcript cache (Phase 1): transcribe a video at most once ----------
+create table if not exists transcripts (
+  video_id   text primary key,        -- youtube video id
+  text       text not null,
+  source     text,                    -- supadata | audio
+  char_len   int,
+  created_at timestamptz not null default now()
+);
+
+-- Shared per-video digest cache (Phase 1): sections ①②③ computed once per video --
+create table if not exists video_digests (
+  video_id      text primary key,     -- youtube video id
+  key_insights  jsonb,                -- section ①
+  patterns      jsonb,                -- section ② (patterns)
+  antipatterns  jsonb,                -- section ② (antipatterns)
+  grading       jsonb,                -- section ③ (independent grade)
+  extract_model text,
+  grader_model  text,
+  created_at    timestamptz not null default now()
+);
