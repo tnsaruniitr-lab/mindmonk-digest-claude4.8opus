@@ -81,16 +81,29 @@ same as wall-clock waiting time.
 
 ## Codebase Size Comparison
 
-Codex codebase size was computed from tracked Git files in the gpt-5.5 repository. Claude
-codebase size uses the `mindmonk-digest-claude4.8opus` metrics. LOC is raw line count, so
-it includes comments and blank lines.
+Codex sizes are from tracked Git files in the gpt-5.5 repository; Claude sizes from the
+`mindmonk-digest-claude4.8opus` working tree (both measured directly). The cleanest "code
+text length" metric is **non-blank TypeScript source SLOC** (tests and docs kept separate);
+raw LOC also counts blank + comment lines.
+
+### Headline — TypeScript source SLOC (non-blank)
+
+| Metric | Codex S1 | Codex S2 | Claude S1 | Claude S2 |
+|---|--:|--:|--:|--:|
+| TypeScript source files | 46 | 50 | 29 | 39 |
+| TS source LOC (raw) | 5,284 | 6,476 | 1,609 | 2,486 |
+| **TS source SLOC (non-blank)** | **4,485** | **5,531** | **1,443** | **2,247** |
+
+Codex's repo carries ~3.1× (S1) and ~2.5× (S2) Claude's non-blank source SLOC — Codex is
+more code. (Claude's code is a touch denser: ~10% blank lines vs Codex's ~15%.)
 
 ### Codex — `mindmonk-digest-gpt5.5`
 
 | Metric | Earlier (`e88d8a8`) | Current (`c07a4ea`) | Delta |
 |---|--:|--:|--:|
 | TypeScript source files | 46 | 50 | +4 |
-| TypeScript source LOC | 5,284 | 6,476 | +1,192 |
+| TypeScript source LOC (raw) | 5,284 | 6,476 | +1,192 |
+| TS source SLOC (non-blank) | 4,485 | 5,531 | +1,046 |
 | Test files | 0 | 0 | 0 |
 | Test LOC | 0 | 0 | 0 |
 | DB tables | 6 | 12 | +6 |
@@ -104,7 +117,8 @@ it includes comments and blank lines.
 | Metric | Earlier (`8c91e8b`) | Current (working tree) | Delta |
 |---|--:|--:|--:|
 | TypeScript source files | 29 | 39 | +10 |
-| TypeScript source LOC | 1,609 | 2,486 | +877 |
+| TypeScript source LOC (raw) | 1,609 | 2,486 | +877 |
+| TS source SLOC (non-blank) | 1,443 | 2,247 | +804 |
 | Test files | 0 | 7 | +7 |
 | Test LOC | 0 | 304 | +304 |
 | DB tables | 6 | 12 | +6 |
