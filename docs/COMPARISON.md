@@ -1,9 +1,12 @@
-# Codex vs Claude Build Usage Comparison
+# Codex vs Claude vs GLM-5.2 — MindMonk Build Usage Comparison
 
-This document records the MindMonk build usage comparison between **Codex gpt-5.5** and
-**Claude Code Opus 4.8**. The Claude numbers are **dev-only** and exclude the separate
-public-repositories engineering audit. The Codex numbers are from the local Codex session
-logs for this project.
+This document records the MindMonk build usage comparison across three coding systems:
+**Codex gpt-5.5**, **Claude Code Opus 4.8**, and **GLM-5.2 (ZCode)**. Codex and Claude are
+tracked at two snapshots (earlier build / current); **GLM-5.2 is a single-snapshot build
+total** (see the GLM-5.2 section). All figures are **dev-only** — Claude's exclude the
+separate public-repositories engineering audit; Codex and GLM-5.2 did no separate audit.
+Codex/Claude are TypeScript; GLM-5.2 is Python, so LOC is not directly comparable across
+languages.
 
 _Last updated: 2026-06-26._
 
@@ -144,6 +147,88 @@ more code. (Claude's code is a touch denser: ~10% blank lines vs Codex's ~15%.)
 **Readout:** Claude's largest codebase delta came from docs, tests, and
 multi-tenant/hardening files. Codex's current repo is larger in TypeScript LOC, but Claude
 has more test files and docs LOC at the compared current snapshot.
+
+## GLM-5.2 (ZCode) — Third System (single snapshot)
+
+A single-thread build (`sess_9ab9e433…`), language **Python**, **no subagents** (ZCode runs
+serial). Dev-only — no separate public-repositories audit. GLM-5.2 has one snapshot (its
+complete build); it is compared below against Codex's and Claude's **current** snapshots.
+
+### Tokens
+
+| Metric | GLM-5.2 (ZCode) | Codex gpt-5.5 | Claude Opus 4.8 Dev |
+|---|--:|--:|--:|
+| Input tokens | 89,834,849 | 109,200,611 | 223,307,503 |
+| Cached input | 75,850,368 (84.4%) | 104,683,776 (95.9%) | 209,343,549 (93.7%) |
+| Uncached input | 13,984,481 (15.6%) | 4,516,835 (4.1%) | 13,963,954 (6.3%) |
+| Output tokens | 219,690 | 428,527 | 1,203,110 |
+| Total tokens | 90,054,539 | 109,629,138 | 224,510,613 |
+| Model calls | 611 | — | — |
+
+vs Codex: 0.82× total tokens (lowest). vs Claude: 0.40× total, 0.18× output. GLM-5.2 is the
+most token-frugal of the three (notably lower output volume).
+
+### Cost
+
+| Metric | GLM-5.2 | Codex | Claude |
+|---|--:|--:|--:|
+| API-equivalent cost | ~$37.49 (¥269.73) | ~$87.78 | ~$220.91 |
+| Blended cost / 1M tokens | ~$0.416 | ~$0.80 | ~$0.98 |
+
+GLM-5.2 ≈ 0.43× Codex and 0.17× Claude cost — by far the cheapest, on a cheaper rate card
+(¥8 / ¥2 / ¥28 per M input / cached / output ≈ $1.11 / $0.28 / $3.89).
+
+### Time
+
+| Metric | GLM-5.2 | Codex | Claude |
+|---|--:|--:|--:|
+| Wall-clock span | 22.74 h | ~22h 14m | ~22h 41m |
+| Summed model runtime | 3.00 h | ~4h 11m | ~4h 22m |
+| Turn runtime | 280 min | — | — |
+| Tool calls | 550 (72 min runtime) | — | — |
+| Subagents | 0 (serial) | 0 | 69 runs (~2h 44m) |
+| Commits | 18 | 24 | — |
+
+GLM-5.2 has the lowest summed model runtime (3h) despite running fully serial.
+
+### Codebase size
+
+| Metric | GLM-5.2 (Python) | Codex (TS) | Claude (TS) |
+|---|--:|--:|--:|
+| Source files | 14 | 50 | 39 |
+| Source LOC | 2,434 | 6,476 | 2,486 |
+| Test files | 0 | 0 | 7 |
+| Test LOC | 0 | 0 | 304 |
+| Docs (.md) files | 1 | 6 | 8 |
+| Docs LOC | 174 | 2,283 | 2,924 |
+| Landing files | 3 (673 LOC) | — | — |
+| DB tables | 1 | 12 | 12 |
+| Runtime deps | 10 | 10 | 8 |
+| Total files | 27 | 61 | 63 |
+| Commits | 18 | 24 | — |
+
+### Scope-honesty notes (GLM-5.2's own)
+
+- **Different language:** Python (~2,434 LOC) vs TypeScript — LOC isn't directly comparable
+  (Python is typically denser, so equivalent functionality shows fewer lines).
+- **Different architecture:** single Railway worker (web + bot + scheduler in one process)
+  with **1** Postgres table, single-user; Codex/Claude have **12** tables and appear
+  multi-tenant — a real scope difference, not just style.
+- **No tests:** 0 committed test files (smoke tests were ad-hoc); Claude has 7.
+- **Less docs:** 1 markdown file vs 6/8.
+- **What GLM-5.2 built that others may not have:** the interactive bot (`/fetch`,
+  `/channel`, `/add`), the Groq→OpenAI Whisper transcription cascade, residential-proxy
+  integration with bot-wall retry, a public landing page + web server, and a `/debug/fetch`
+  audit endpoint. Its token/time cost reflects debugging deploy/auth issues (GitHub PAT
+  scope, Railway token scope, IP blocks).
+
+### One-line readout
+
+At matched snapshots, GLM-5.2 is the **cheapest and fastest** of the three (~0.4× Codex
+cost, ~0.2× Claude cost; 3h vs 4h+ model runtime) and most token-frugal — but the
+**smallest codebase, single-user only, with no committed tests and minimal docs**. The
+lower cost partly reflects narrower scope (no multi-tenancy, no test/docs workflows),
+partly GLM-5.2's cheaper rate card, and partly lower output verbosity.
 
 ## Claude Dev-Only Breakdown
 
