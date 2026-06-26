@@ -21,6 +21,10 @@ Three-part architecture reference:
 Phased delivery plan **P0 → P3**, each with a granular checklist, UATs (user
 acceptance tests), exit criteria, and rollback notes.
 
+### 📊 [COMPARISON.md](https://github.com/tnsaruniitr-lab/mindmonk-digest-claude4.8opus/blob/main/docs/COMPARISON.md)
+Build cost & token-usage comparison — Codex (gpt-5.5) vs Claude Code (Opus 4.8),
+two snapshots, dev-only (audit excluded), with methodology.
+
 ---
 
 **Status:** the transcription pipeline (Architecture Part I) is built and deployed;
