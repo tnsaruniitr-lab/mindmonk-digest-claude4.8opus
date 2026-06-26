@@ -193,7 +193,35 @@ GLM-5.2 has the lowest summed model runtime (3h) despite running fully serial.
 
 ### Codebase size
 
-| Metric | GLM-5.2 (Python) | Codex (TS) | Claude (TS) |
+GLM-5.2 is a single build, so it's shown against both the **earlier-build (S1)** and
+**current (S2)** snapshots of Codex/Claude. **S1 is the more apples-to-apples comparison** —
+by S2 the others added hardening, a multi-tenant schema, tests, and planning docs that
+GLM's build did not include.
+
+**At Snapshot 1 (earlier build — most apples-to-apples):**
+
+| Metric | GLM-5.2 (Python) | Codex S1 (TS) | Claude S1 (TS) |
+|---|--:|--:|--:|
+| Source files | 14 | 46 | 29 |
+| Source LOC (raw) | 2,434 | 5,284 | 1,609 |
+| Source SLOC (non-blank) | n/a | 4,485 | 1,443 |
+| Test files | 0 | 0 | 0 |
+| Docs (.md) files | 1 | 1 | 1 |
+| Docs LOC | 174 | 170 | 96 |
+| DB tables | 1 | 6 | 6 |
+| Runtime deps | 10 | 10 | 8 |
+| Landing files | 3 (673 LOC) | — | — |
+| Total files | 27 | 52 | 38 |
+| Commits | 18 | 17 | 4 |
+
+At the build-complete stage all three are close in maturity — 0 tests, 1 doc each. DB
+tables: GLM **1** (single-user) vs **6** (Codex/Claude). Codex S1 is the largest (46 files /
+5,284 LOC); GLM has the fewest files (14) but more LOC than Claude S1 — Python density plus
+a landing page / web server in fewer, larger files.
+
+**vs current snapshot (S2), for reference:**
+
+| Metric | GLM-5.2 (Python) | Codex S2 (TS) | Claude S2 (TS) |
 |---|--:|--:|--:|
 | Source files | 14 | 50 | 39 |
 | Source LOC | 2,434 | 6,476 | 2,486 |
