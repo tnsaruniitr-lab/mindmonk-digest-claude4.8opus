@@ -42,6 +42,11 @@ const Env = z.object({
   // When set, it's tried FIRST; the audio chain above stays intact as the fallback.
   SUPADATA_API_KEY: z.string().default(''),
 
+  // --- Multi-user web app --------------------------------------------------------
+  // When set, /api/signup requires this exact invite code (invite-only mode).
+  // Leave blank for open signup (not recommended while the bot token is shared).
+  INVITE_CODE: z.string().default(''),
+
   // --- Waterfall dashboard (optional HTTP observability) ------------------------
   // When DASHBOARD_SECRET is set, a small HTTP server exposes /dashboard?key=<secret>
   // showing which transcript tier served/failed each video. Empty = no server at all.

@@ -1,8 +1,15 @@
 import { createServer, type IncomingMessage } from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
+import QRCode from 'qrcode'
 import { config } from '../config'
 import { log, scrub } from '../util/logger'
 import { DASHBOARD_PAGE, digestDetailPage } from './page'
+import { APP_PAGE, LOGIN_PAGE } from './app-page'
+import { clearSessionCookie, csrfOk, redirect, requestUser, sessionCookie, sessionTokenFrom } from './session'
+import { authenticate, createSession, createUser, deleteSession, loginThrottled, recordLoginFailure } from '../services/auth'
+import { createLinkToken, linkedChatId, unlinkTelegram } from '../services/links'
+import { listSubscriptions, subscribe, unsubscribe } from '../services/subscriptions'
+import { bot } from '../bot/bot'
 import { recentJourneys, sourceCounts, spendSummary, tierStats } from '../services/waterfall'
 import { channelsOverview, getDigestRendered, jobState, latestDigest, recentDigests } from '../services/overview'
 import { statusCounts } from '../services/videos'
@@ -55,6 +62,25 @@ function json(res: import('node:http').ServerResponse, status: number, body: unk
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body))
 }
 
+function html(res: import('node:http').ServerResponse, page: string): void {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(page)
+}
+
+/** Client IP for the login throttle — first x-forwarded-for hop on Railway. */
+function clientIp(req: IncomingMessage): string {
+  const xff = req.headers['x-forwarded-for']
+  const first = (Array.isArray(xff) ? xff[0] : xff ?? '').split(',')[0].trim()
+  return first || req.socket.remoteAddress || 'unknown'
+}
+
+let cachedBotUsername = ''
+async function botUsername(): Promise<string> {
+  if (!cachedBotUsername) cachedBotUsername = (await bot.telegram.getMe()).username
+  return cachedBotUsername
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 async function waterfallData(): Promise<Record<string, unknown>> {
   const [recent, tiers, sources, spend, statuses, channels, digests] = await Promise.all([
     recentJourneys(30),
@@ -91,6 +117,100 @@ export function startHttpServer(): void {
         res.writeHead(200, { 'content-type': 'text/plain' }).end('ok')
         return
       }
+
+      // ---- Multi-user app: session-cookie auth (spec §5–§7) -------------------
+      if (req.method === 'GET' && url.pathname === '/') {
+        return redirect(res, (await requestUser(req)) ? '/app' : '/login')
+      }
+      if (req.method === 'GET' && url.pathname === '/login') {
+        if (await requestUser(req)) return redirect(res, '/app')
+        return html(res, LOGIN_PAGE)
+      }
+      if (req.method === 'GET' && url.pathname === '/app') {
+        if (!(await requestUser(req))) return redirect(res, '/login')
+        return html(res, APP_PAGE)
+      }
+      if (req.method === 'POST' && (url.pathname === '/api/signup' || url.pathname === '/api/login')) {
+        if (!csrfOk(req)) return json(res, 403, { error: 'bad request origin' })
+        const body = await readJsonBody(req)
+        const email = typeof body.email === 'string' ? body.email.trim() : ''
+        const password = typeof body.password === 'string' ? body.password : ''
+        const ip = clientIp(req)
+        if (url.pathname === '/api/signup') {
+          if (config.INVITE_CODE && (typeof body.invite === 'string' ? body.invite.trim() : '') !== config.INVITE_CODE) {
+            return json(res, 403, { error: 'invalid invite code' })
+          }
+          if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 400, { error: 'valid email required' })
+          if (password.length < 10) return json(res, 400, { error: 'password must be at least 10 characters' })
+          const user = await createUser(email, password)
+          if (!user) return json(res, 409, { error: 'that email is already registered' })
+          const tok = await createSession(user.id, String(req.headers['user-agent'] ?? ''))
+          res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': sessionCookie(tok, 30 * 24 * 3600) }).end('{"ok":true}')
+          log.info(`New signup: ${user.email}`)
+          return
+        }
+        if (loginThrottled(ip)) return json(res, 429, { error: 'too many attempts — wait 15 minutes' })
+        const user = await authenticate(email, password)
+        if (!user) {
+          recordLoginFailure(ip)
+          log.warn(`login failed from ${ip}`)
+          return json(res, 401, { error: 'wrong email or password' })
+        }
+        const tok = await createSession(user.id, String(req.headers['user-agent'] ?? ''))
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': sessionCookie(tok, 30 * 24 * 3600) }).end('{"ok":true}')
+        return
+      }
+      const SESSION_PATHS = new Set(['/api/me', '/api/logout', '/api/link/start', '/api/link/status', '/api/link/unlink', '/api/subscriptions', '/api/subscriptions/remove'])
+      if (SESSION_PATHS.has(url.pathname)) {
+        const u = await requestUser(req)
+        if (!u) return json(res, 401, { error: 'not signed in' })
+        if (req.method === 'POST' && !csrfOk(req)) return json(res, 403, { error: 'bad request origin' })
+        if (req.method === 'GET' && url.pathname === '/api/me') {
+          return json(res, 200, { email: u.email, is_owner: u.is_owner, linked: !!(await linkedChatId(u.id)) })
+        }
+        if (req.method === 'GET' && url.pathname === '/api/link/status') {
+          return json(res, 200, { linked: !!(await linkedChatId(u.id)) })
+        }
+        if (req.method === 'GET' && url.pathname === '/api/subscriptions') {
+          return json(res, 200, { subscriptions: await listSubscriptions(u.id) })
+        }
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (url.pathname === '/api/logout') {
+          await deleteSession(sessionTokenFrom(req))
+          res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': clearSessionCookie() }).end('{"ok":true}')
+          return
+        }
+        if (url.pathname === '/api/link/start') {
+          const token = await createLinkToken(u.id)
+          const deepLink = `https://t.me/${await botUsername()}?start=${token}`
+          const qr = await QRCode.toDataURL(deepLink, { margin: 1, width: 440 })
+          return json(res, 200, { deepLink, qr, expiresInSeconds: 600 })
+        }
+        if (url.pathname === '/api/link/unlink') {
+          await unlinkTelegram(u.id)
+          return json(res, 200, { ok: true })
+        }
+        if (url.pathname === '/api/subscriptions') {
+          const b = await readJsonBody(req)
+          const input = typeof b.input === 'string' ? b.input.trim() : ''
+          if (!input) return json(res, 400, { error: 'channel url, @handle, or UC… id required' })
+          try {
+            const r = await subscribe(u.id, input)
+            return r.ok ? json(res, 200, r) : json(res, 422, r)
+          } catch (e) {
+            return json(res, 422, { error: scrub(String(e)).slice(0, 300) })
+          }
+        }
+        if (url.pathname === '/api/subscriptions/remove') {
+          const b = await readJsonBody(req)
+          const id = typeof b.id === 'string' ? b.id : ''
+          if (!UUID_RE.test(id)) return json(res, 400, { error: 'bad id' })
+          await unsubscribe(u.id, id)
+          return json(res, 200, { ok: true })
+        }
+      }
+
+      // ---- Admin surface (owner god-view, ?key=DASHBOARD_SECRET) ---------------
       if (!authorized(url)) {
         // Loud on purpose: a brute-force attempt should be visible in Railway logs.
         log.warn(`dashboard 401: ${url.pathname} from ${req.socket.remoteAddress ?? 'unknown'}`)
@@ -130,7 +250,7 @@ export function startHttpServer(): void {
       }
 
       // ---- Pages + read APIs (GET) --------------------------------------------
-      if (url.pathname === '/' || url.pathname === '/dashboard') {
+      if (url.pathname === '/dashboard') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(DASHBOARD_PAGE)
         return
       }

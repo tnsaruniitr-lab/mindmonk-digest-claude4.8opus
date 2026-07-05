@@ -11,10 +11,18 @@ bot.catch((err, ctx) => {
   log.error(`telegraf handler error (update ${ctx.updateType})`, String(err))
 })
 
-/** Owner gate: the bot only ever talks to TELEGRAM_CHAT_ID. */
+/**
+ * Access gate (spec §6): the owner chat gets every command, as before.
+ * Other chats are allowed through ONLY for the linking handshake (/start with
+ * a token) and /unlink — everything else gets one polite pointer to the web
+ * app (commands only; plain text from strangers is still ignored).
+ */
 bot.use(async (ctx, next) => {
-  if (ctx.chat && ctx.chat.id.toString() !== config.TELEGRAM_CHAT_ID) {
-    return // silently ignore everyone else
+  if (!ctx.chat) return
+  if (ctx.chat.id.toString() === config.TELEGRAM_CHAT_ID) return next()
+  const text = ctx.message && 'text' in ctx.message ? ctx.message.text : ''
+  if (/^\/(start|unlink)\b/.test(text)) return next()
+  if (text.startsWith('/')) {
+    await ctx.reply('This bot is managed through the MindMonk web app — sign in there to add channels. Digest delivery to linked accounts is coming soon.')
   }
-  return next()
 })

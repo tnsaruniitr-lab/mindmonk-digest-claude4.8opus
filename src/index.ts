@@ -7,6 +7,7 @@ import { ensureProfileSeeded } from './services/profile'
 import { runPoller } from './scheduler/poller'
 import { runWorker } from './scheduler/worker'
 import { startHttpServer } from './http/server'
+import { purgeExpiredSessions } from './services/auth'
 import { log } from './util/logger'
 
 process.on('unhandledRejection', (reason) => log.error('unhandledRejection', String(reason)))
@@ -19,6 +20,11 @@ async function main(): Promise<void> {
   await migrate()
   await ensureProfileSeeded()
   startHttpServer() // no-op unless DASHBOARD_SECRET is set
+
+  // Daily hygiene: drop expired sessions + stale link tokens.
+  cron.schedule('30 4 * * *', () => {
+    purgeExpiredSessions().catch((e) => log.warn('session purge failed', String(e)))
+  })
 
   // Detect new uploads, then process the queue.
   cron.schedule(config.POLL_CRON, () => {

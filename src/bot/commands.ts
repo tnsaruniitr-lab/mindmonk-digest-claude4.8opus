@@ -6,6 +6,7 @@ import { getProfile, setProfile } from '../services/profile'
 import { getMinDurationMinutes, setSetting } from '../services/settings'
 import { statusCounts } from '../services/videos'
 import { runVideoNow } from '../services/run-now'
+import { redeemLinkToken, unlinkTelegram, userByChatId } from '../services/links'
 import { recentJourneys } from '../services/waterfall'
 import { formatJourney } from '../util/journey'
 import { backfillLatest, latestVideo, runPoller } from '../scheduler/poller'
@@ -79,7 +80,37 @@ I watch your favourite YouTube channels and, when they publish a new long-form e
 /waterfall — which transcript tier served each recent video
 /grader — grader configuration`
 
-bot.start((ctx) => ctx.reply('👋 Ready. Add a channel with /add <url>, then /help for everything.'))
+// /start carries the QR deep-link payload: t.me/<bot>?start=<one-time-token>.
+// Redeeming it links this Telegram chat to the web account that minted the token.
+bot.start(async (ctx) => {
+  const payload = (ctx as unknown as { payload?: string }).payload?.trim() ?? ''
+  if (payload) {
+    const r = await redeemLinkToken(payload, ctx.chat.id.toString())
+    switch (r.kind) {
+      case 'linked':
+        return ctx.reply(`🔗 Linked! This Telegram is now connected to ${r.email}. Manage your channels in the web app — digests will arrive right here.`)
+      case 'expired':
+        return ctx.reply('That link code has expired or was already used — open the web app and tap "Link Telegram" again for a fresh QR.')
+      case 'chat_taken':
+        return ctx.reply(`This Telegram is already linked to ${r.email}. Unlink it first with /unlink if you want to switch accounts.`)
+      case 'invalid':
+        return ctx.reply('That link code isn’t valid — open the web app and tap "Link Telegram" for a fresh QR.')
+    }
+  }
+  const isOwner = ctx.chat.id.toString() === config.TELEGRAM_CHAT_ID
+  return ctx.reply(
+    isOwner
+      ? '👋 Ready. Add a channel with /add <url>, then /help for everything.'
+      : '👋 To connect this bot, sign in to the MindMonk web app and scan the "Link Telegram" QR code.',
+  )
+})
+
+bot.command('unlink', async (ctx) => {
+  const user = await userByChatId(ctx.chat.id.toString())
+  if (!user) return ctx.reply('This chat isn’t linked to any web account.')
+  await unlinkTelegram(user.id)
+  await ctx.reply(`Unlinked from ${user.email}. Scan a fresh QR in the web app to re-link any time.`)
+})
 
 bot.help(async (ctx) => {
   const min = await getMinDurationMinutes()
