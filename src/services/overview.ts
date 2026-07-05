@@ -63,3 +63,62 @@ export async function getDigestRendered(id: string): Promise<{ title: string | n
     [id],
   )
 }
+
+/** Newest delivered digest with its full rendered text (test console: "show latest"). */
+export async function latestDigest(): Promise<{ id: string; title: string | null; rendered: string | null; created_at: string } | null> {
+  return one<{ id: string; title: string | null; rendered: string | null; created_at: string }>(
+    `select d.id, v.title, d.rendered, d.created_at::text
+     from digests d
+     left join videos v on v.id = d.video_id
+     order by d.created_at desc
+     limit 1`,
+  )
+}
+
+export interface JobState {
+  video_id: string
+  title: string | null
+  url: string | null
+  status: string
+  skip_reason: string | null
+  transcript_source: string | null
+  transcript_chars: number | null
+  events: { tier: string; outcome: string; detail: string | null; duration_ms: number | null; created_at: string }[]
+  digest: { id: string; created_at: string; rendered: string } | null
+}
+
+/** Live state of one fetch job, polled by the test console while it runs. */
+export async function jobState(videoId: string): Promise<JobState | null> {
+  const video = await one<{ id: string; video_id: string; title: string | null; url: string | null; status: string; skip_reason: string | null; transcript_source: string | null; transcript_chars: number | null }>(
+    `select v.id, v.video_id, v.title, v.url, v.status, v.skip_reason,
+            t.source as transcript_source, t.char_len as transcript_chars
+     from videos v
+     left join transcripts t on t.video_id = v.video_id
+     where v.video_id = $1`,
+    [videoId],
+  )
+  if (!video) return null
+  const events = await query<{ tier: string; outcome: string; detail: string | null; duration_ms: number | null; created_at: string }>(
+    `select tier, outcome, detail, duration_ms, created_at::text
+     from waterfall_events where video_id = $1
+     order by id desc limit 12`,
+    [videoId],
+  )
+  events.reverse()
+  const digest = await one<{ id: string; created_at: string; rendered: string }>(
+    `select id, created_at::text, rendered from digests
+     where video_id = $1 order by created_at desc limit 1`,
+    [video.id],
+  )
+  return {
+    video_id: video.video_id,
+    title: video.title,
+    url: video.url,
+    status: video.status,
+    skip_reason: video.skip_reason,
+    transcript_source: video.transcript_source,
+    transcript_chars: video.transcript_chars,
+    events,
+    digest,
+  }
+}

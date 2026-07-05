@@ -78,12 +78,47 @@ export const DASHBOARD_PAGE = `<!doctype html>
   #err { display: none; background: #2d1416; color: var(--red); border: 1px solid var(--red); border-radius: 8px; padding: 10px 14px; margin-top: 16px; }
   .muted { color: var(--dim); }
   footer { color: var(--dim); font-size: 12px; margin-top: 28px; }
+  .console { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
+  .crow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .crow input[type=text] { flex: 1; min-width: 260px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; font: inherit; }
+  .crow input[type=text]:focus { outline: none; border-color: var(--blue); }
+  button { background: #1f6feb; border: none; border-radius: 6px; color: #fff; padding: 8px 14px; font: inherit; font-weight: 550; cursor: pointer; }
+  button:hover { filter: brightness(1.1); }
+  button.secondary { background: #21262d; border: 1px solid var(--border); color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .chk { color: var(--dim); font-size: 13px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  #job { border-top: 1px solid var(--border); padding-top: 10px; display: none; }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); margin-right: 7px; animation: pulse 1.2s ease-in-out infinite; vertical-align: 1px; }
+  @keyframes pulse { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
+  #jobjourney { margin-top: 8px; }
+  #digestout { border-top: 1px solid var(--border); padding-top: 12px; display: none; }
+  .dhead { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+  .dbody { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; line-height: 1.65; overflow-wrap: break-word; max-height: 560px; overflow-y: auto; }
 </style>
 </head>
 <body>
   <h1>🔀 MindMonk — Transcript Waterfall</h1>
   <div class="sub" id="meta">loading…</div>
   <div id="err"></div>
+  <h2>Test console</h2>
+  <div class="console">
+    <div class="crow">
+      <input type="text" id="chInput" placeholder="Add channel: url, @handle, or UC… id" autocomplete="off">
+      <label class="chk"><input type="checkbox" id="chBackfill"> also digest its latest video</label>
+      <button id="chAdd">Add channel</button>
+      <span id="chMsg" class="muted"></span>
+    </div>
+    <div class="crow">
+      <input type="text" id="vidInput" placeholder="Fetch a video: paste any YouTube url — live waterfall + digest below" autocomplete="off">
+      <button id="vidFetch">Fetch &amp; digest</button>
+      <button id="lastBtn" class="secondary">Show latest digest</button>
+    </div>
+    <div id="job">
+      <div id="jobstatus"></div>
+      <div id="jobjourney"></div>
+    </div>
+    <div id="digestout"></div>
+  </div>
   <div class="cards" id="cards"></div>
   <h2>Channels</h2>
   <div class="tablewrap"><table id="channels"><thead><tr>
@@ -214,6 +249,109 @@ export const DASHBOARD_PAGE = `<!doctype html>
         + '<td>' + view + '</td></tr>'
     }).join('') || '<tr><td colspan="6" class="muted">no digests delivered yet</td></tr>'
   }
+
+  // ---- Test console -----------------------------------------------------
+  function postJson(path, body) {
+    return fetch(path + '?key=' + encodeURIComponent(KEY), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function (res) { return res.json().then(function (j) { return { ok: res.ok, status: res.status, body: j } }) })
+  }
+
+  function showDigest(title, createdAt, rendered) {
+    var out = document.getElementById('digestout')
+    out.style.display = 'block'
+    out.innerHTML = '<div class="dhead">' + esc(title || 'Digest') + ' · delivered ' + esc(ago(createdAt) || createdAt) + '</div>'
+      + '<div class="dbody">' + String(rendered || '').replace(/\\n/g, '<br>') + '</div>'
+    out.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }
+
+  var pollTimer = null
+  var pollStarted = 0
+
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+
+  function setJobStatus(html) {
+    var j = document.getElementById('job')
+    j.style.display = 'block'
+    document.getElementById('jobstatus').innerHTML = html
+  }
+
+  function pollJob(videoId) {
+    fetch('/api/job?video=' + encodeURIComponent(videoId) + '&key=' + encodeURIComponent(KEY))
+      .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json() })
+      .then(function (s) {
+        var title = s.title || s.video_id
+        document.getElementById('jobjourney').innerHTML = journeyHtml(s.events, 0, s.status)
+        if (s.status === 'processing' || (s.status === 'pending' && !s.skip_reason)) {
+          var stage = s.transcript_source
+            ? 'transcript ✓ via ' + esc(s.transcript_source) + (s.transcript_chars ? ' (' + Number(s.transcript_chars).toLocaleString() + ' chars)' : '') + ' — extracting ①②③④…'
+            : 'acquiring transcript — waterfall running…'
+          setJobStatus('<span class="pulse"></span><b>' + esc(title) + '</b> — ' + stage)
+          if (Date.now() - pollStarted > 15 * 60 * 1000) { stopPolling(); setJobStatus('⏱ still running after 15 min — check Telegram or refresh later') }
+          return
+        }
+        stopPolling()
+        load() // refresh tables once terminal
+        if (s.status === 'done' && s.digest) {
+          setJobStatus('✅ <b>' + esc(title) + '</b> — delivered (also sent to Telegram)')
+          showDigest(title, s.digest.created_at, s.digest.rendered)
+        } else if (s.status === 'pending' && (s.skip_reason === 'rate_limited' || s.skip_reason === 'spend_cap')) {
+          setJobStatus('⏳ <b>' + esc(title) + '</b> — ' + (s.skip_reason === 'rate_limited'
+            ? 'ASR rate-limited; queued — the worker will deliver it automatically within the hour'
+            : 'daily spend cap reached; queued — delivers after the cap resets'))
+        } else if (s.status === 'skipped') {
+          setJobStatus('⏭️ <b>' + esc(title) + '</b> — skipped (' + esc(s.skip_reason || '') + ')')
+        } else {
+          setJobStatus('❌ <b>' + esc(title) + '</b> — ' + esc(s.skip_reason || s.status))
+        }
+      })
+      .catch(function () { /* transient poll error — keep the timer running */ })
+  }
+
+  document.getElementById('chAdd').addEventListener('click', function () {
+    var input = document.getElementById('chInput').value.trim()
+    var msg = document.getElementById('chMsg')
+    if (!input) { msg.textContent = 'paste a channel url / @handle first'; return }
+    var btn = document.getElementById('chAdd')
+    btn.disabled = true
+    msg.textContent = 'resolving channel…'
+    postJson('/api/channels', { input: input, backfill: document.getElementById('chBackfill').checked })
+      .then(function (r) {
+        btn.disabled = false
+        if (!r.ok) { msg.textContent = '✗ ' + (r.body.error || 'failed'); return }
+        msg.textContent = '✅ added ' + r.body.added + (r.body.backfilled ? ' — latest video queued, digest coming' : '')
+        document.getElementById('chInput').value = ''
+        load()
+      })
+      .catch(function (e) { btn.disabled = false; msg.textContent = '✗ ' + e.message })
+  })
+
+  document.getElementById('vidFetch').addEventListener('click', function () {
+    var url = document.getElementById('vidInput').value.trim()
+    if (!url) { setJobStatus('paste a YouTube video url first'); return }
+    stopPolling()
+    document.getElementById('digestout').style.display = 'none'
+    setJobStatus('<span class="pulse"></span>starting…')
+    document.getElementById('jobjourney').innerHTML = ''
+    postJson('/api/fetch', { url: url })
+      .then(function (r) {
+        if (!r.ok && r.status !== 409) { setJobStatus('✗ ' + (r.body.error || 'failed to start')); return }
+        pollStarted = Date.now()
+        var vid = r.body.videoId
+        pollJob(vid)
+        pollTimer = setInterval(function () { pollJob(vid) }, 2500)
+      })
+      .catch(function (e) { setJobStatus('✗ ' + e.message) })
+  })
+
+  document.getElementById('lastBtn').addEventListener('click', function () {
+    fetch('/api/last-digest?key=' + encodeURIComponent(KEY))
+      .then(function (res) { if (!res.ok) throw new Error(res.status === 404 ? 'no digests yet' : 'HTTP ' + res.status); return res.json() })
+      .then(function (d) { showDigest(d.title, d.created_at, d.rendered) })
+      .catch(function (e) { setJobStatus('✗ ' + e.message) })
+  })
 
   function load() {
     fetch('/api/waterfall?key=' + encodeURIComponent(KEY))

@@ -101,11 +101,61 @@ const MOCK = {
   ],
 }
 
+const SAMPLE_DIGEST = [
+  '🎙️ <b>Simulated episode — the test console works</b>',
+  '<i>Mock Channel · 1h12m</i> · <a href="https://youtube.com">watch</a>',
+  '',
+  '<b>① Key insights</b>',
+  '• <b>The loader polls /api/job every 2.5s</b> — journey chips appear as tiers report in.',
+  '• <b>The digest renders inline</b> — same Telegram HTML, right in the browser.',
+  '',
+  '<b>② Patterns &amp; antipatterns</b>',
+  '✅ <b>One pipeline, two front doors</b> — web console and /fetch share run-now.ts.',
+  '⛔ <b>Stale-done race</b> — avoided: prepare() claims before the 202 returns.',
+  '',
+  '<b>③ Unbiased grade</b> <i>(by gpt-4o-mini)</i>',
+  'Overall: <b>8/10</b> — a fair simulation of the real thing.',
+  '',
+  '<b>④ For you</b> <i>(relevance: high)</i>',
+  '• <b>Click Fetch &amp; digest on a real video</b> — this exact panel shows the live waterfall.',
+].join('\n')
+
+// Scripted job progression: each /api/job poll advances one stage.
+let jobPolls = 0
+const JOB_STAGES = [
+  { status: 'processing', transcript_source: null, transcript_chars: null, events: [], digest: null },
+  { status: 'processing', transcript_source: null, transcript_chars: null, events: [
+    { tier: 'supadata', outcome: 'miss', detail: 'no transcript content in response', duration_ms: 1700, created_at: new Date(now).toISOString() },
+  ], digest: null },
+  { status: 'processing', transcript_source: 'audio', transcript_chars: 88412, events: [
+    { tier: 'supadata', outcome: 'miss', detail: 'no transcript content in response', duration_ms: 1700, created_at: new Date(now).toISOString() },
+    { tier: 'audio:groq', outcome: 'hit', detail: null, duration_ms: 64_000, created_at: new Date(now).toISOString() },
+  ], digest: null },
+  { status: 'done', transcript_source: 'audio', transcript_chars: 88412, events: [
+    { tier: 'supadata', outcome: 'miss', detail: 'no transcript content in response', duration_ms: 1700, created_at: new Date(now).toISOString() },
+    { tier: 'audio:groq', outcome: 'hit', detail: null, duration_ms: 64_000, created_at: new Date(now).toISOString() },
+  ], digest: { id: '99999999-9999-4999-8999-999999999999', created_at: new Date(now).toISOString(), rendered: SAMPLE_DIGEST } },
+]
+
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
-  if (url.pathname === '/api/waterfall') {
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(MOCK))
+  const j = (body: unknown, status = 200) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body))
+  if (req.method === 'POST' && url.pathname === '/api/channels') {
+    j({ added: 'Mock Channel', backfilled: 1 })
+  } else if (req.method === 'POST' && url.pathname === '/api/fetch') {
+    jobPolls = 0
+    j({ videoId: 'sim0000001' }, 202)
+  } else if (url.pathname === '/api/job') {
+    const stage = JOB_STAGES[Math.min(jobPolls++, JOB_STAGES.length - 1)]
+    j({ video_id: 'sim0000001', title: 'Simulated episode — the test console works', url: 'https://youtube.com', skip_reason: null, ...stage })
+  } else if (url.pathname === '/api/last-digest') {
+    j({ id: '99999999-9999-4999-8999-999999999999', title: 'Simulated episode — the test console works', rendered: SAMPLE_DIGEST, created_at: new Date(now - 3_600_000).toISOString() })
+  } else if (url.pathname === '/api/waterfall') {
+    j(MOCK)
   } else {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(DASHBOARD_PAGE)
+    // Big banner so mock data is never mistaken for the real system.
+    const banner = '<div style="background:#7a1f1f;color:#fff;text-align:center;padding:10px;font:600 14px system-ui">'
+      + '⚠️ LOCAL SIMULATOR — every input returns canned fake data. The real dashboard is your Railway URL.</div>'
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(DASHBOARD_PAGE.replace('<body>', '<body>' + banner))
   }
-}).listen(5183, () => console.log('preview: http://localhost:5183/dashboard?key=preview'))
+}).listen(5183, () => console.log('preview (SIMULATED DATA): http://localhost:5183/dashboard?key=preview'))

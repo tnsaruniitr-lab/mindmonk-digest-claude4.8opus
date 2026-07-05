@@ -4,13 +4,11 @@ import { config, graderConfigured } from '../config'
 import { addChannel, listChannels, removeChannel } from '../services/channels'
 import { getProfile, setProfile } from '../services/profile'
 import { getMinDurationMinutes, setSetting } from '../services/settings'
-import { claimById, enqueueVideo, getVideoByVideoId, resetVideo, setVideoStatus, statusCounts } from '../services/videos'
+import { statusCounts } from '../services/videos'
+import { runVideoNow } from '../services/run-now'
 import { recentJourneys } from '../services/waterfall'
 import { formatJourney } from '../util/journey'
 import { backfillLatest, latestVideo, runPoller } from '../scheduler/poller'
-import { NoTranscriptYet, processVideo } from '../pipeline/process-video'
-import { TranscriptRateLimited } from '../youtube/ytdlp'
-import { DailySpendCapExceeded } from '../cost/ledger'
 import { scrub } from '../util/logger'
 import { parseVideoId, resolveChannel } from '../util/youtube'
 
@@ -22,60 +20,40 @@ function arg(text: string | undefined): string {
 }
 
 /**
- * Summarize one video on demand and deliver its digest. The long-form filter
- * is bypassed (force) — if you explicitly ask for a video, you get it, any length.
+ * Summarize one video on demand and deliver its digest (shared pipeline in
+ * services/run-now.ts — same path the dashboard test console uses).
  */
-async function runVideoNow(
+async function runVideoNowTg(
   ctx: Context,
   videoId: string,
   meta: { channelId?: string | null; title?: string | null; publishedAt?: string | null } = {},
 ): Promise<void> {
-  let row = await getVideoByVideoId(videoId)
-  if (!row) row = await enqueueVideo({ videoId, channelId: meta.channelId ?? null, title: meta.title ?? null, publishedAt: meta.publishedAt ?? null })
-  if (!row) row = await getVideoByVideoId(videoId)
-  if (!row) {
-    await ctx.reply('Could not create the video record.')
-    return
-  }
-  await resetVideo(row.id)
-  const claimed = await claimById(row.id) // atomic — won't race the worker
-  if (!claimed) {
-    await ctx.reply('That video is already being processed — hang tight.')
-    return
-  }
-  try {
-    const res = await processVideo(claimed, { force: true })
-    if (res.kind === 'delivered') {
-      await setVideoStatus(row.id, { status: 'done', markProcessed: true, is_long_form: true })
-    } else {
-      await setVideoStatus(row.id, { status: 'skipped', skip_reason: res.reason, markProcessed: true })
+  const res = await runVideoNow(videoId, meta)
+  switch (res.kind) {
+    case 'delivered':
+      return // the digest itself is the reply
+    case 'no_record':
+      await ctx.reply('Could not create the video record.')
+      return
+    case 'already_processing':
+      await ctx.reply('That video is already being processed — hang tight.')
+      return
+    case 'skipped':
       await ctx.reply(`Skipped (${res.reason}).`)
-    }
-  } catch (e) {
-    if (e instanceof TranscriptRateLimited) {
-      // The audio downloaded fine — transcription is just throttled. Leave it
-      // queued (NOT failed) so the worker delivers it once the quota frees up.
-      await setVideoStatus(row.id, { status: 'pending', skip_reason: 'rate_limited' })
+      return
+    case 'requeued':
       await ctx.reply(
-        '⏳ Transcription is rate-limited right now (Groq free-tier audio cap — ~2h of audio/hour). I’ve queued it; your digest will arrive automatically within the hour. No need to resend.',
+        res.reason === 'rate_limited'
+          ? '⏳ Transcription is rate-limited right now (Groq free-tier audio cap — ~2h of audio/hour). I’ve queued it; your digest will arrive automatically within the hour. No need to resend.'
+          : '💸 Daily spend cap reached — I’ve queued this; your digest will arrive automatically after the cap resets (next server day). No need to resend.',
       )
       return
-    }
-    if (e instanceof DailySpendCapExceeded) {
-      // Transient daily cap — re-queue (NOT failed) so the worker delivers it once the
-      // cap resets; do NOT markProcessed (the worker only ever claims 'pending').
-      await setVideoStatus(row.id, { status: 'pending', skip_reason: 'spend_cap' })
+    case 'failed':
       await ctx.reply(
-        '💸 Daily spend cap reached — I’ve queued this; your digest will arrive automatically after the cap resets (next server day). No need to resend.',
+        res.noTranscript
+          ? 'Couldn’t get a usable transcript for that video — captions are unavailable and audio transcription returned nothing.'
+          : 'Error: ' + res.error,
       )
-      return
-    }
-    await setVideoStatus(row.id, { status: 'failed', skip_reason: scrub(String(e)).slice(0, 200), markProcessed: true })
-    if (e instanceof NoTranscriptYet) {
-      await ctx.reply('Couldn’t get a usable transcript for that video — captions are unavailable and audio transcription returned nothing.')
-    } else {
-      await ctx.reply('Error: ' + scrub(String(e)).slice(0, 300))
-    }
   }
 }
 
@@ -175,13 +153,13 @@ bot.command('fetch', async (ctx) => {
   const vid = parseVideoId(arg(ctx.message?.text))
   if (!vid) return ctx.reply('Usage: /fetch <youtube video url or 11-char id>')
   await ctx.reply('⏳ Summarizing that video now…')
-  await runVideoNow(ctx, vid)
+  await runVideoNowTg(ctx, vid)
 })
 bot.command('test', async (ctx) => {
   const vid = parseVideoId(arg(ctx.message?.text))
   if (!vid) return ctx.reply('Usage: /test <youtube video url or 11-char id>')
   await ctx.reply('⏳ Summarizing that video now…')
-  await runVideoNow(ctx, vid)
+  await runVideoNowTg(ctx, vid)
 })
 
 // Summarize the latest video on a channel (one-off — does not subscribe).
@@ -194,7 +172,7 @@ bot.command('channel', async (ctx) => {
     const latest = await latestVideo(ch.channelId)
     if (!latest) return ctx.reply('Could not find any videos on that channel.')
     await ctx.reply(`📺 Latest: ${latest.title ?? latest.videoId} — summarizing now…`)
-    await runVideoNow(ctx, latest.videoId, { title: latest.title, publishedAt: latest.publishedAt })
+    await runVideoNowTg(ctx, latest.videoId, { title: latest.title, publishedAt: latest.publishedAt })
   } catch (e) {
     await ctx.reply('Could not fetch that channel: ' + scrub(String(e)).slice(0, 300))
   }

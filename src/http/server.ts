@@ -1,11 +1,15 @@
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage } from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
 import { config } from '../config'
-import { log } from '../util/logger'
+import { log, scrub } from '../util/logger'
 import { DASHBOARD_PAGE, digestDetailPage } from './page'
 import { recentJourneys, sourceCounts, spendSummary, tierStats } from '../services/waterfall'
-import { channelsOverview, getDigestRendered, recentDigests } from '../services/overview'
+import { channelsOverview, getDigestRendered, jobState, latestDigest, recentDigests } from '../services/overview'
 import { statusCounts } from '../services/videos'
+import { addChannel } from '../services/channels'
+import { backfillLatest } from '../scheduler/poller'
+import { executeVideoNow, prepareVideoNow } from '../services/run-now'
+import { parseVideoId } from '../util/youtube'
 
 // Minimal observability HTTP surface (the service is otherwise long-polling only):
 //   GET /healthz            — liveness, no auth
@@ -18,6 +22,37 @@ function authorized(url: URL): boolean {
   const given = Buffer.from(url.searchParams.get('key') ?? '')
   const want = Buffer.from(config.DASHBOARD_SECRET)
   return given.length === want.length && timingSafeEqual(given, want)
+}
+
+const MAX_BODY_BYTES = 16 * 1024
+
+/** Read + parse a small JSON request body (test-console POSTs). */
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => {
+      try {
+        resolve(chunks.length ? (JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>) : {})
+      } catch {
+        reject(new Error('invalid JSON body'))
+      }
+    })
+    req.on('error', reject)
+  })
+}
+
+function json(res: import('node:http').ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body))
 }
 
 async function waterfallData(): Promise<Record<string, unknown>> {
@@ -48,7 +83,7 @@ export function startHttpServer(): void {
   const server = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://localhost')
-      if (req.method !== 'GET') {
+      if (req.method !== 'GET' && req.method !== 'POST') {
         res.writeHead(405).end('method not allowed')
         return
       }
@@ -62,9 +97,53 @@ export function startHttpServer(): void {
         res.writeHead(401, { 'content-type': 'text/plain' }).end('unauthorized — append ?key=<DASHBOARD_SECRET>')
         return
       }
+
+      // ---- Test console (POST) ------------------------------------------------
+      if (req.method === 'POST' && url.pathname === '/api/channels') {
+        const body = await readJsonBody(req)
+        const input = typeof body.input === 'string' ? body.input.trim() : ''
+        if (!input) return json(res, 400, { error: 'input required: channel url, @handle, or UC… id' })
+        try {
+          const ch = await addChannel(input)
+          let backfilled = 0
+          if (body.backfill === true) backfilled = await backfillLatest(ch, 1)
+          return json(res, 200, { added: ch.title ?? ch.handle ?? ch.youtube_channel_id, backfilled })
+        } catch (e) {
+          return json(res, 422, { error: scrub(String(e)).slice(0, 300) })
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/fetch') {
+        const body = await readJsonBody(req)
+        const vid = parseVideoId(typeof body.url === 'string' ? body.url.trim() : '')
+        if (!vid) return json(res, 400, { error: 'not a YouTube video url or 11-char id' })
+        const prep = await prepareVideoNow(vid)
+        if (prep.kind === 'already_processing') return json(res, 409, { error: 'already being processed', videoId: vid })
+        if (prep.kind === 'no_record') return json(res, 500, { error: 'could not create the video record' })
+        // Long part runs async; the client polls /api/job. Same pipeline as Telegram
+        // /fetch — the digest ALSO goes to Telegram, by design.
+        void executeVideoNow(prep.video).catch((e) => log.error('console fetch failed', String(e)))
+        return json(res, 202, { videoId: vid })
+      }
+      if (req.method === 'POST') {
+        res.writeHead(404, { 'content-type': 'text/plain' }).end('not found')
+        return
+      }
+
+      // ---- Pages + read APIs (GET) --------------------------------------------
       if (url.pathname === '/' || url.pathname === '/dashboard') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(DASHBOARD_PAGE)
         return
+      }
+      if (url.pathname === '/api/job') {
+        const vid = url.searchParams.get('video') ?? ''
+        const state = vid ? await jobState(vid) : null
+        if (!state) return json(res, 404, { error: 'unknown video' })
+        return json(res, 200, state)
+      }
+      if (url.pathname === '/api/last-digest') {
+        const d = await latestDigest()
+        if (!d) return json(res, 404, { error: 'no digests yet' })
+        return json(res, 200, d)
       }
       if (url.pathname === '/api/waterfall') {
         const data = await waterfallData()
