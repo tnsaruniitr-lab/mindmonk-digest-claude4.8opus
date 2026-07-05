@@ -269,8 +269,11 @@ export const DASHBOARD_PAGE = `<!doctype html>
 
   var pollTimer = null
   var pollStarted = 0
+  var pollFails = 0
+  var fetchBtn = document.getElementById('vidFetch')
 
   function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+  function endJob() { stopPolling(); fetchBtn.disabled = false }
 
   function setJobStatus(html) {
     var j = document.getElementById('job')
@@ -279,35 +282,49 @@ export const DASHBOARD_PAGE = `<!doctype html>
   }
 
   function pollJob(videoId) {
+    // Elapsed check first, so it fires whether polls succeed OR keep erroring.
+    if (Date.now() - pollStarted > 15 * 60 * 1000) {
+      endJob(); setJobStatus('⏱ still running after 15 min — the worker will keep going; check Telegram or refresh later')
+      return
+    }
     fetch('/api/job?video=' + encodeURIComponent(videoId) + '&key=' + encodeURIComponent(KEY))
       .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json() })
       .then(function (s) {
+        pollFails = 0
         var title = s.title || s.video_id
         document.getElementById('jobjourney').innerHTML = journeyHtml(s.events, 0, s.status)
-        if (s.status === 'processing' || (s.status === 'pending' && !s.skip_reason)) {
+        // Still working: 'processing', or 'pending' with a retryable requeue reason
+        // (awaiting_captions from the worker's NoTranscriptYet path shows here, not as ❌).
+        var stillRunning = s.status === 'processing' || (s.status === 'pending' && (!s.skip_reason || s.skip_reason === 'awaiting_captions'))
+        if (stillRunning) {
           var stage = s.transcript_source
             ? 'transcript ✓ via ' + esc(s.transcript_source) + (s.transcript_chars ? ' (' + Number(s.transcript_chars).toLocaleString() + ' chars)' : '') + ' — extracting ①②③④…'
-            : 'acquiring transcript — waterfall running…'
+            : (s.skip_reason === 'awaiting_captions' ? 'captions not ready yet — the worker will retry' : 'acquiring transcript — waterfall running…')
           setJobStatus('<span class="pulse"></span><b>' + esc(title) + '</b> — ' + stage)
-          if (Date.now() - pollStarted > 15 * 60 * 1000) { stopPolling(); setJobStatus('⏱ still running after 15 min — check Telegram or refresh later') }
           return
         }
-        stopPolling()
+        endJob()
         load() // refresh tables once terminal
         if (s.status === 'done' && s.digest) {
           setJobStatus('✅ <b>' + esc(title) + '</b> — delivered (also sent to Telegram)')
           showDigest(title, s.digest.created_at, s.digest.rendered)
-        } else if (s.status === 'pending' && (s.skip_reason === 'rate_limited' || s.skip_reason === 'spend_cap')) {
-          setJobStatus('⏳ <b>' + esc(title) + '</b> — ' + (s.skip_reason === 'rate_limited'
-            ? 'ASR rate-limited; queued — the worker will deliver it automatically within the hour'
-            : 'daily spend cap reached; queued — delivers after the cap resets'))
+        } else if (s.status === 'pending') {
+          // Any other requeue (rate_limited, spend_cap, generic retry): the worker owns it now.
+          var msg = s.skip_reason === 'spend_cap' ? 'daily spend cap reached; queued — delivers after the cap resets'
+            : s.skip_reason === 'rate_limited' ? 'ASR rate-limited; queued — the worker delivers it automatically within the hour'
+            : 'queued — the worker will retry and deliver to Telegram automatically'
+          setJobStatus('⏳ <b>' + esc(title) + '</b> — ' + msg)
         } else if (s.status === 'skipped') {
           setJobStatus('⏭️ <b>' + esc(title) + '</b> — skipped (' + esc(s.skip_reason || '') + ')')
         } else {
           setJobStatus('❌ <b>' + esc(title) + '</b> — ' + esc(s.skip_reason || s.status))
         }
       })
-      .catch(function () { /* transient poll error — keep the timer running */ })
+      .catch(function () {
+        // Tolerate transient blips; give up after several consecutive failures so a
+        // rotated key / server-down tab doesn't poll forever with a stale pulse.
+        if (++pollFails >= 5) { endJob(); setJobStatus('⚠️ lost contact with the server — refresh to retry') }
+      })
   }
 
   document.getElementById('chAdd').addEventListener('click', function () {
@@ -321,29 +338,35 @@ export const DASHBOARD_PAGE = `<!doctype html>
       .then(function (r) {
         btn.disabled = false
         if (!r.ok) { msg.textContent = '✗ ' + (r.body.error || 'failed'); return }
-        msg.textContent = '✅ added ' + r.body.added + (r.body.backfilled ? ' — latest video queued, digest coming' : '')
+        msg.textContent = '✅ added ' + r.body.added + (r.body.backfilled ? ' — latest video queued (digest arrives if it’s long-form)' : '')
         document.getElementById('chInput').value = ''
         load()
       })
       .catch(function (e) { btn.disabled = false; msg.textContent = '✗ ' + e.message })
   })
 
-  document.getElementById('vidFetch').addEventListener('click', function () {
+  fetchBtn.addEventListener('click', function () {
+    if (fetchBtn.disabled) return // already running — ignore double-clicks
     var url = document.getElementById('vidInput').value.trim()
     if (!url) { setJobStatus('paste a YouTube video url first'); return }
+    // Disable + stop synchronously (before the async POST) so a rapid second click
+    // can't leak a second interval that later kills the live job's polling.
+    fetchBtn.disabled = true
     stopPolling()
+    pollFails = 0
+    pollStarted = Date.now()
     document.getElementById('digestout').style.display = 'none'
     setJobStatus('<span class="pulse"></span>starting…')
     document.getElementById('jobjourney').innerHTML = ''
     postJson('/api/fetch', { url: url })
       .then(function (r) {
-        if (!r.ok && r.status !== 409) { setJobStatus('✗ ' + (r.body.error || 'failed to start')); return }
-        pollStarted = Date.now()
+        if (!r.ok && r.status !== 409) { endJob(); setJobStatus('✗ ' + (r.body.error || 'failed to start')); return }
         var vid = r.body.videoId
+        pollStarted = Date.now() // reset clock to first successful poll, not button click
         pollJob(vid)
         pollTimer = setInterval(function () { pollJob(vid) }, 2500)
       })
-      .catch(function (e) { setJobStatus('✗ ' + e.message) })
+      .catch(function (e) { endJob(); setJobStatus('✗ ' + e.message) })
   })
 
   document.getElementById('lastBtn').addEventListener('click', function () {

@@ -35,8 +35,11 @@ export async function prepareVideoNow(
   if (!row) row = await enqueueVideo({ videoId, channelId: meta.channelId ?? null, title: meta.title ?? null, publishedAt: meta.publishedAt ?? null })
   if (!row) row = await getVideoByVideoId(videoId)
   if (!row) return { kind: 'no_record' }
-  await resetVideo(row.id)
-  const claimed = await claimById(row.id) // atomic — won't race the worker
+  // resetVideo refuses 'processing' rows, so a video the worker (or another fetch) is
+  // mid-flight on stays claimed by them — we don't steal it and double-process.
+  const wasReset = await resetVideo(row.id)
+  if (!wasReset) return { kind: 'already_processing' }
+  const claimed = await claimById(row.id) // atomic — worker may still win the tiny gap
   if (!claimed) return { kind: 'already_processing' }
   return { kind: 'claimed', video: claimed }
 }

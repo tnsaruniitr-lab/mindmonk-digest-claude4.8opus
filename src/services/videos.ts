@@ -100,12 +100,16 @@ export async function getVideoByVideoId(videoId: string): Promise<VideoRow | nul
   return one<VideoRow>('select * from videos where video_id = $1', [videoId])
 }
 
-/** Reset a video so it (re)processes from scratch — used by /test. */
-export async function resetVideo(id: string): Promise<void> {
-  await query(
+/** Reset a video so it (re)processes from scratch — used by the on-demand fetch path.
+ *  Refuses rows currently 'processing' so it can't steal an in-flight claim (the cron
+ *  worker, or a concurrent fetch of the same video). Returns true iff it was reset. */
+export async function resetVideo(id: string): Promise<boolean> {
+  const rows = await query<{ id: string }>(
     `update videos set status = 'pending', attempts = 0, transcript_attempts = 0,
        processed_at = null, skip_reason = null, claimed_at = null
-     where id = $1`,
+     where id = $1 and status <> 'processing'
+     returning id`,
     [id],
   )
+  return rows.length > 0
 }
