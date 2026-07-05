@@ -109,7 +109,7 @@ export const APP_PAGE = `<!doctype html>
   .x:hover { color:var(--red); }
   #qrbox { text-align:center; padding:10px 0; display:none; }
   #qrbox img { width:220px; height:220px; border-radius:8px; background:#fff; padding:8px; }
-  #qrbox .dl { margin-top:10px; font-size:13px; }
+  #qrbox .dl { margin-top:10px; font-size:13px; overflow-wrap:anywhere; word-break:break-all; }
   .pill { display:inline-block; border-radius:999px; padding:2px 11px; font-size:12px; font-weight:550; }
   .pill.on { background:#12261a; color:var(--green); }
   .pill.off { background:#2b2211; color:var(--amber); }
@@ -136,7 +136,7 @@ export const APP_PAGE = `<!doctype html>
       <img id="qr" alt="QR code">
       <div class="dl">or tap: <a id="deep" target="_blank" rel="noreferrer"></a></div>
     </div>
-    <div id="note">Digests for your channels are delivered to your linked Telegram.</div>
+    <div id="note">Link your Telegram so your digests can be delivered there. Per-account delivery is rolling out — for now your channels are saved to your account.</div>
   </div>
 
   <h2>My channels</h2>
@@ -185,23 +185,30 @@ export const APP_PAGE = `<!doctype html>
     })
   }
 
-  document.getElementById('linkBtn').addEventListener('click', function () {
+  var linkBtn = document.getElementById('linkBtn')
+  linkBtn.addEventListener('click', function () {
+    if (linkBtn.disabled) return
+    linkBtn.disabled = true
+    hideQr() // clear any prior QR's timers before starting a fresh one (no zombie intervals)
     post('/api/link/start').then(function (r) {
-      if (!r.ok) return
+      linkBtn.disabled = false
+      if (!r.ok) { document.getElementById('note').textContent = 'Could not start linking — try again.'; return }
       document.getElementById('qr').src = r.j.qr
       var a = document.getElementById('deep'); a.href = r.j.deepLink; a.textContent = r.j.deepLink
       document.getElementById('qrbox').style.display = 'block'
-      var left = r.j.expiresInSeconds
+      // Deadline-based countdown (not decrement) so a throttled background tab can't
+      // show a "valid" QR after the token has actually expired.
+      var deadline = Date.now() + r.j.expiresInSeconds * 1000
       ttlTimer = setInterval(function () {
-        left--
+        var left = Math.round((deadline - Date.now()) / 1000)
         if (left <= 0) { hideQr(); return }
         var m = Math.floor(left / 60), s = left % 60
         document.getElementById('ttl').textContent = m + ':' + (s < 10 ? '0' : '') + s
       }, 1000)
       qrTimer = setInterval(function () {
-        get('/api/link/status').then(function (s) { if (s.linked) { setLinked(true) } })
+        get('/api/link/status').then(function (s) { if (s.linked) { setLinked(true) } }).catch(function () {})
       }, 3000)
-    })
+    }).catch(function () { linkBtn.disabled = false; document.getElementById('note').textContent = 'Network error — try again.' })
   })
   document.getElementById('unlinkBtn').addEventListener('click', function () {
     post('/api/link/unlink').then(function () { setLinked(false) })

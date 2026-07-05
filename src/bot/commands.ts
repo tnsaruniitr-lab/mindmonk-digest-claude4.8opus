@@ -88,7 +88,7 @@ bot.start(async (ctx) => {
     const r = await redeemLinkToken(payload, ctx.chat.id.toString())
     switch (r.kind) {
       case 'linked':
-        return ctx.reply(`🔗 Linked! This Telegram is now connected to ${r.email}. Manage your channels in the web app — digests will arrive right here.`)
+        return ctx.reply(`🔗 Linked! This Telegram is now connected to ${r.email}. Manage your channels in the web app — per-account digest delivery here is rolling out.`)
       case 'expired':
         return ctx.reply('That link code has expired or was already used — open the web app and tap "Link Telegram" again for a fresh QR.')
       case 'chat_taken':

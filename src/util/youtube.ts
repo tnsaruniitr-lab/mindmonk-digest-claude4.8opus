@@ -35,6 +35,18 @@ export async function resolveChannel(input: string): Promise<ResolvedChannel> {
   if (raw.startsWith('@')) url = `https://www.youtube.com/${raw}`
   else if (!/^https?:\/\//.test(raw)) url = `https://www.youtube.com/@${raw.replace(/^@/, '')}`
 
+  // Only ever fetch a YouTube host — the input reaches here from authenticated web
+  // users, so a raw http(s):// value must not become a blind server-side fetch (SSRF).
+  let host: string
+  try {
+    host = new URL(url).hostname.toLowerCase()
+  } catch {
+    throw new Error('That doesn’t look like a channel URL, @handle, or UC… id.')
+  }
+  if (host !== 'youtube.com' && host !== 'www.youtube.com' && host !== 'm.youtube.com') {
+    throw new Error('Only youtube.com channel URLs, @handles, or UC… ids are supported.')
+  }
+
   const html = await fetchText(url)
   const channelId =
     html.match(/"channelId":"(UC[\w-]{22})"/)?.[1] ??

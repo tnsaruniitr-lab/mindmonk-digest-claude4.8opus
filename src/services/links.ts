@@ -48,9 +48,14 @@ export async function redeemLinkToken(token: string, chatId: string): Promise<Re
     [row.user_id, chatId],
   )
   // Owner bootstrap (spec §8): the account that links the historical owner chat
-  // becomes the owner and inherits every existing catalog channel as subscriptions
-  // — his current setup keeps working, now expressed in the multi-user model.
-  if (chatId === config.TELEGRAM_CHAT_ID) {
+  // becomes the owner and inherits every existing catalog channel as subscriptions.
+  // Gated on OWNER_EMAIL so ownership can't be transferred by phishing the owner into
+  // scanning an attacker's QR — only the pre-declared owner account is promoted.
+  const isOwnerClaim =
+    chatId === config.TELEGRAM_CHAT_ID &&
+    config.OWNER_EMAIL !== '' &&
+    row.email.toLowerCase() === config.OWNER_EMAIL.toLowerCase()
+  if (isOwnerClaim) {
     await query('update users set is_owner = true where id = $1', [row.user_id])
     await query(
       `insert into subscriptions(user_id, channel_id)

@@ -66,11 +66,16 @@ function html(res: import('node:http').ServerResponse, page: string): void {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(page)
 }
 
-/** Client IP for the login throttle — first x-forwarded-for hop on Railway. */
+/**
+ * Client IP for auth throttling. Railway's edge APPENDS the real client IP as the
+ * LAST x-forwarded-for hop, so we take the rightmost entry — the leftmost hops are
+ * client-supplied and spoofable (taking [0] would let an attacker rotate the key
+ * and bypass the throttle entirely).
+ */
 function clientIp(req: IncomingMessage): string {
   const xff = req.headers['x-forwarded-for']
-  const first = (Array.isArray(xff) ? xff[0] : xff ?? '').split(',')[0].trim()
-  return first || req.socket.remoteAddress || 'unknown'
+  const chain = (Array.isArray(xff) ? xff.join(',') : xff ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  return chain[chain.length - 1] || req.socket.remoteAddress || 'unknown'
 }
 
 let cachedBotUsername = ''
@@ -136,8 +141,12 @@ export function startHttpServer(): void {
         const email = typeof body.email === 'string' ? body.email.trim() : ''
         const password = typeof body.password === 'string' ? body.password : ''
         const ip = clientIp(req)
+        // Both signup and login are throttled per IP — signup also burns scrypt CPU
+        // and can be used for invite-code brute force / enumeration.
+        if (loginThrottled(ip)) return json(res, 429, { error: 'too many attempts — wait 15 minutes' })
         if (url.pathname === '/api/signup') {
           if (config.INVITE_CODE && (typeof body.invite === 'string' ? body.invite.trim() : '') !== config.INVITE_CODE) {
+            recordLoginFailure(ip)
             return json(res, 403, { error: 'invalid invite code' })
           }
           if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 400, { error: 'valid email required' })
@@ -195,7 +204,7 @@ export function startHttpServer(): void {
           const input = typeof b.input === 'string' ? b.input.trim() : ''
           if (!input) return json(res, 400, { error: 'channel url, @handle, or UC… id required' })
           try {
-            const r = await subscribe(u.id, input)
+            const r = await subscribe(u, input)
             return r.ok ? json(res, 200, r) : json(res, 422, r)
           } catch (e) {
             return json(res, 422, { error: scrub(String(e)).slice(0, 300) })

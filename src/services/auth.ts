@@ -27,17 +27,18 @@ export async function createUser(email: string, password: string, isOwner = fals
   return row
 }
 
+// Precomputed once at module load so BOTH the user-exists and no-such-user paths
+// run exactly one scrypt — no timing oracle for account enumeration.
+const DUMMY_HASH = hashPassword('no-such-user-timing-equalizer')
+
 export async function authenticate(email: string, password: string): Promise<User | null> {
   const row = await one<User & { password_hash: string }>(
     'select id, email, is_owner, password_hash from users where email = $1',
     [normalizeEmail(email)],
   )
-  // Hash something even when the user doesn't exist — keeps timing flat.
-  if (!row) {
-    verifyPassword(password, hashPassword('timing-equalizer'))
-    return null
-  }
-  if (!verifyPassword(password, row.password_hash)) return null
+  // Verify against the same-shape hash whether or not the user exists — one scrypt either way.
+  const ok = verifyPassword(password, row?.password_hash ?? DUMMY_HASH)
+  if (!row || !ok) return null
   return { id: row.id, email: row.email, is_owner: row.is_owner }
 }
 

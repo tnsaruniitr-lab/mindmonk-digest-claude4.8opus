@@ -21,8 +21,11 @@ bot.use(async (ctx, next) => {
   if (!ctx.chat) return
   if (ctx.chat.id.toString() === config.TELEGRAM_CHAT_ID) return next()
   const text = ctx.message && 'text' in ctx.message ? ctx.message.text : ''
-  if (/^\/(start|unlink)\b/.test(text)) return next()
-  if (text.startsWith('/')) {
-    await ctx.reply('This bot is managed through the MindMonk web app — sign in there to add channels. Digest delivery to linked accounts is coming soon.')
+  // Only the linking handshake is allowed for other chats.
+  if (/^\/(start|unlink)(@\w+)?(\s|$)/.test(text)) return next()
+  // A polite pointer, but ONLY in a 1:1 private chat (never chime into group chats
+  // the bot happens to be in, or answer commands addressed to other bots).
+  if (ctx.chat.type === 'private' && text.startsWith('/')) {
+    await ctx.reply('This bot is managed through the MindMonk web app — sign in there to link Telegram and add channels.')
   }
 })

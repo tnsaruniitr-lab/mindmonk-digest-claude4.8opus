@@ -1,5 +1,6 @@
 import { one, query } from '../db/db'
-import { addChannel } from './channels'
+import { addChannel, catalogChannel } from './channels'
+import type { User } from './auth'
 
 // Per-user channel subscriptions (spec §3): channels stay a shared catalog;
 // who-follows-what lives here. Phase 1 = management only; Phase 2 wires the
@@ -18,20 +19,22 @@ export interface SubscriptionRow {
   created_at: string
 }
 
-export async function subscribe(userId: string, channelInput: string): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
+export async function subscribe(user: User, channelInput: string): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
   const count = await one<{ n: number }>(
     `select count(*)::int as n from subscriptions where user_id = $1 and active = true`,
-    [userId],
+    [user.id],
   )
   if ((count?.n ?? 0) >= MAX_CHANNELS_PER_USER) {
     return { ok: false, error: `channel limit reached (${MAX_CHANNELS_PER_USER})` }
   }
-  // Resolves + upserts into the shared catalog (existing behavior for the owner path).
-  const ch = await addChannel(channelInput)
+  // Owner's web adds behave exactly like /add (active → polled + delivered to owner).
+  // Non-owner adds are catalog-only + inert until Phase 2's per-user delivery, so they
+  // can't enroll a channel into the owner's feed/spend (the critical Phase-1 leak).
+  const ch = user.is_owner ? await addChannel(channelInput) : await catalogChannel(channelInput)
   await query(
     `insert into subscriptions(user_id, channel_id) values($1, $2)
      on conflict(user_id, channel_id) do update set active = true`,
-    [userId, ch.id],
+    [user.id, ch.id],
   )
   return { ok: true, title: ch.title ?? ch.handle ?? ch.youtube_channel_id }
 }

@@ -15,6 +15,26 @@ export async function addChannel(input: string): Promise<ChannelRow> {
   return row as ChannelRow
 }
 
+/**
+ * Catalog-only channel resolution for NON-owner subscriptions (Phase 1): ensure a
+ * catalog row exists but NEVER flip `channels.active`. `active` still means "the
+ * owner's poller tracks this"; a non-owner subscribing must not enroll a channel
+ * into the owner's global feed/spend (that's Phase 2's per-user fan-out). New rows
+ * land inert (active=false); existing rows are left exactly as they are.
+ */
+export async function catalogChannel(input: string): Promise<ChannelRow> {
+  const r = await resolveChannel(input)
+  let row = await one<ChannelRow>(
+    `insert into channels(youtube_channel_id, title, handle, url, active)
+     values($1, $2, $3, $4, false)
+     on conflict(youtube_channel_id) do nothing
+     returning *`,
+    [r.channelId, r.title, r.handle, r.url],
+  )
+  if (!row) row = await one<ChannelRow>('select * from channels where youtube_channel_id = $1', [r.channelId])
+  return row as ChannelRow
+}
+
 export async function listChannels(activeOnly = true): Promise<ChannelRow[]> {
   return activeOnly
     ? query<ChannelRow>('select * from channels where active = true order by created_at asc')

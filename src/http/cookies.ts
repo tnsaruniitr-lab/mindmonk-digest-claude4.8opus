@@ -10,7 +10,8 @@ export function parseCookies(header: string | undefined): Record<string, string>
     if (eq === -1) continue
     const k = part.slice(0, eq).trim()
     const v = part.slice(eq + 1).trim()
-    if (k) out[k] = decodeURIComponent(v)
+    // A malformed %-sequence must not throw (it would 500 every page, incl. /login).
+    if (k) { try { out[k] = decodeURIComponent(v) } catch { out[k] = v } }
   }
   return out
 }

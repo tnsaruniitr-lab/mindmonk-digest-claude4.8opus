@@ -46,6 +46,10 @@ const Env = z.object({
   // When set, /api/signup requires this exact invite code (invite-only mode).
   // Leave blank for open signup (not recommended while the bot token is shared).
   INVITE_CODE: z.string().default(''),
+  // The account (by email) allowed to become owner when it links TELEGRAM_CHAT_ID.
+  // Without this, linking the owner chat does NOT auto-promote — closes the phishing
+  // vector where a scanned attacker QR would otherwise transfer ownership.
+  OWNER_EMAIL: z.string().default(''),
 
   // --- Waterfall dashboard (optional HTTP observability) ------------------------
   // When DASHBOARD_SECRET is set, a small HTTP server exposes /dashboard?key=<secret>
