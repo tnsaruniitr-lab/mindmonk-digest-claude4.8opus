@@ -6,6 +6,7 @@ import { migrate } from './db/migrate'
 import { ensureProfileSeeded } from './services/profile'
 import { runPoller } from './scheduler/poller'
 import { runWorker } from './scheduler/worker'
+import { startHttpServer } from './http/server'
 import { log } from './util/logger'
 
 process.on('unhandledRejection', (reason) => log.error('unhandledRejection', String(reason)))
@@ -17,6 +18,7 @@ process.on('uncaughtException', (err) => {
 async function main(): Promise<void> {
   await migrate()
   await ensureProfileSeeded()
+  startHttpServer() // no-op unless DASHBOARD_SECRET is set
 
   // Detect new uploads, then process the queue.
   cron.schedule(config.POLL_CRON, () => {

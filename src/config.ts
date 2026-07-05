@@ -42,6 +42,13 @@ const Env = z.object({
   // When set, it's tried FIRST; the audio chain above stays intact as the fallback.
   SUPADATA_API_KEY: z.string().default(''),
 
+  // --- Waterfall dashboard (optional HTTP observability) ------------------------
+  // When DASHBOARD_SECRET is set, a small HTTP server exposes /dashboard?key=<secret>
+  // showing which transcript tier served/failed each video. Empty = no server at all.
+  DASHBOARD_SECRET: z.string().default(''),
+  // Tolerant parse: PORT= (blank) must not crash a bot that isn't even serving HTTP.
+  PORT: z.preprocess((v) => (v == null || v === '' ? 8080 : v), z.coerce.number().int().positive()), // Railway injects PORT when networking is enabled
+
   // --- Cost guardrail (Phase 0 kill-switch) ------------------------------------
   // Hard daily ceiling on estimated LLM + transcription spend (USD). When today's
   // tracked spend reaches this, new expensive calls pause (jobs re-queue, no data

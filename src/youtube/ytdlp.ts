@@ -14,6 +14,7 @@ import { retry } from '../util/retry'
 import { log } from '../util/logger'
 import { assertUnderDailyCap, recordAsrUsage } from '../cost/ledger'
 import { estimateSecondsFromText } from '../cost/pricing'
+import { recordWaterfall } from '../services/waterfall'
 
 const pexec = promisify(execFile)
 
@@ -86,12 +87,15 @@ export async function getTranscript(data: VideoData): Promise<string | null> {
     return null
   }
   if (!data.meta.id) return null
-  // Still inside a recent quota cooldown — don't even download the audio.
+  // Still inside a recent quota cooldown — don't even download the audio. Deliberately
+  // NOT recorded as a waterfall event: no API call happens, and worker re-queues mean
+  // one stall would otherwise append an event every tick, drowning the real 429.
   if (Date.now() < groqCooldownUntil) {
     throw new TranscriptRateLimited('ASR quota recently exhausted; cooling down before re-downloading')
   }
   // Pause before incurring a proxy-metered download + paid ASR if the daily cap is hit.
   await assertUnderDailyCap()
+  const t0 = Date.now()
   const dir = await mkdtemp(join(tmpdir(), 'mm-'))
   try {
     // 1. audio-only download (proxy + PO-token-free client)
@@ -105,7 +109,10 @@ export async function getTranscript(data: VideoData): Promise<string | null> {
       { tries: 3, baseMs: 4000, label: 'yt-dlp-audio' },
     )
     const raw = (await readdir(dir)).find((f) => f.startsWith('a.'))
-    if (!raw) return null
+    if (!raw) {
+      void recordWaterfall(data.meta.id, 'audio', 'error', { detail: 'yt-dlp produced no audio file', durationMs: Date.now() - t0 })
+      return null
+    }
 
     // 2. downsample to 16 kHz mono (Whisper's native rate) to shrink it
     const mono = join(dir, 'mono.mp3')
@@ -146,8 +153,23 @@ export async function getTranscript(data: VideoData): Promise<string | null> {
     }
 
     text = text.replace(/\s+/g, ' ').trim()
-    if (!text) return null
+    if (!text) {
+      void recordWaterfall(data.meta.id, 'audio', 'miss', { detail: 'ASR returned empty text', durationMs: Date.now() - t0 })
+      return null
+    }
     if (text.length > MAX_TRANSCRIPT_CHARS) text = `${text.slice(0, MAX_TRANSCRIPT_CHARS)} …[transcript truncated]`
+    // Journey detail: a Groq 429 that fell back to OpenAI is worth its own event, so
+    // the dashboard shows "audio:groq⏳ → audio:openai✓" instead of hiding it. Fired
+    // fire-and-forget but chained, so the pair keeps its bigserial order.
+    {
+      const id = data.meta.id
+      const dur = Date.now() - t0
+      const fellBack = asrProvider === 'openai' && audioAsrEnabled
+      void (async () => {
+        if (fellBack) await recordWaterfall(id, 'audio:groq', 'rate_limited', { detail: 'Groq 429 — fell back to OpenAI' })
+        await recordWaterfall(id, fellBack ? 'audio:openai' : `audio:${asrProvider}`, 'hit', { durationMs: dur })
+      })()
+    }
     await recordAsrUsage({
       provider: asrProvider,
       model: asrModel,
@@ -163,9 +185,11 @@ export async function getTranscript(data: VideoData): Promise<string | null> {
     if (e instanceof TranscriptRateLimited) {
       groqCooldownUntil = Date.now() + GROQ_COOLDOWN_MS
       log.warn('transcription rate-limited on all providers (will retry later)', String(e))
+      void recordWaterfall(data.meta.id, 'audio', 'rate_limited', { detail: String(e), durationMs: Date.now() - t0 })
       throw e
     }
     log.warn('audio transcription failed', String(e))
+    void recordWaterfall(data.meta.id, 'audio', 'error', { detail: String(e), durationMs: Date.now() - t0 })
     return null
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {})

@@ -51,6 +51,8 @@ export async function processVideo(
 
   // --- transcript: cache → 3-tier waterfall (transcribe at most once). Immutable, so a
   //     force recompute still reuses it — only ①②③/④ are recomputed, never re-paying ASR. ---
+  // NOTE: deliberately NOT recorded in waterfall_events — a journey is the story of
+  // ACQUIRING the transcript once; cache hits on re-runs would append noise to it.
   let transcript = await getCachedTranscript(video.video_id)
   if (transcript) {
     log.info(`Transcript via cache: ${video.video_id}`)

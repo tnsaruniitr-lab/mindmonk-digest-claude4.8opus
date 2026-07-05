@@ -8,11 +8,12 @@
 // caption-disabled videos via their own ASR.
 //
 // Returns null on ANY failure (incl. its own rate limit) so the caller transparently
-// falls back to the audio chain. This module is intentionally standalone — it does
-// not import or affect the existing flow.
+// falls back to the audio chain. Its only side effect is a fire-and-forget
+// waterfall_events row per attempt (observability — never throws into this flow).
 import { config } from '../config'
 import { retry } from '../util/retry'
 import { log } from '../util/logger'
+import { recordWaterfall } from '../services/waterfall'
 
 const MAX_TRANSCRIPT_CHARS = 300_000
 const ENDPOINT = 'https://api.supadata.ai/v1/youtube/transcript'
@@ -23,6 +24,8 @@ interface SupadataResponse {
   jobId?: string // only the async (long-ASR) path returns this; see note below
 }
 
+type SupadataFetch = { kind: 'ok'; text: string } | { kind: 'rate_limited' } | { kind: 'empty'; why: string }
+
 /**
  * Fetch a clean transcript for a YouTube video via Supadata. Verified synchronous
  * for videos up to at least 1h16m (returns `content` directly, no job polling).
@@ -30,41 +33,51 @@ interface SupadataResponse {
  */
 export async function supadataTranscript(videoId: string): Promise<string | null> {
   if (!videoId || !config.SUPADATA_API_KEY) return null
+  const t0 = Date.now()
   try {
-    const raw = await retry(() => fetchSupadata(videoId), { tries: 3, baseMs: 2000, label: 'supadata' })
-    if (!raw) return null
-    let text = raw.replace(/\s+/g, ' ').trim()
-    if (!text) return null
+    const r = await retry(() => fetchSupadata(videoId), { tries: 3, baseMs: 2000, label: 'supadata' })
+    if (r.kind === 'rate_limited') {
+      void recordWaterfall(videoId, 'supadata', 'rate_limited', { detail: 'HTTP 429 — Supadata quota exhausted', durationMs: Date.now() - t0 })
+      return null
+    }
+    let text = r.kind === 'ok' ? r.text.replace(/\s+/g, ' ').trim() : ''
+    if (!text) {
+      const why = r.kind === 'empty' ? r.why : 'empty transcript text'
+      void recordWaterfall(videoId, 'supadata', 'miss', { detail: why, durationMs: Date.now() - t0 })
+      return null
+    }
     if (text.length > MAX_TRANSCRIPT_CHARS) text = `${text.slice(0, MAX_TRANSCRIPT_CHARS)} …[transcript truncated]`
+    void recordWaterfall(videoId, 'supadata', 'hit', { durationMs: Date.now() - t0 })
     return text
   } catch (e) {
     // Any failure (incl. 429) is non-fatal here — fall back to the audio chain.
     log.warn('Supadata transcript failed; falling back to audio chain', String(e))
+    void recordWaterfall(videoId, 'supadata', 'error', { detail: String(e), durationMs: Date.now() - t0 })
     return null
   }
 }
 
-async function fetchSupadata(videoId: string): Promise<string | null> {
+async function fetchSupadata(videoId: string): Promise<SupadataFetch> {
   const url = `${ENDPOINT}?videoId=${encodeURIComponent(videoId)}&text=true`
   const res = await fetch(url, { headers: { 'x-api-key': config.SUPADATA_API_KEY } })
 
-  // Quota exhausted — not retryable in seconds. Return null so we fall back rather
+  // Quota exhausted — not retryable in seconds. Report it so we fall back rather
   // than burning retries; the audio chain (Groq) may still have budget.
   if (res.status === 429) {
     log.warn('Supadata rate-limited (429) — falling back to audio chain')
-    return null
+    return { kind: 'rate_limited' }
   }
   if (!res.ok) throw new Error(`Supadata HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
 
   const data = (await res.json()) as SupadataResponse
-  if (typeof data.content === 'string') return data.content
+  if (typeof data.content === 'string') return { kind: 'ok', text: data.content }
 
   // Defensive: the youtube/transcript endpoint has been synchronous in all testing
   // (incl. 1h16m). If a future very-long video ever returns an async jobId instead,
   // don't guess the (unverified) polling contract — fall back to the audio chain.
   if (data.jobId) {
     log.warn(`Supadata returned async jobId ${data.jobId}; falling back to audio chain`)
-    return null
+    return { kind: 'empty', why: `async jobId returned (very long video)` }
   }
-  return null
+  return { kind: 'empty', why: 'no transcript content in response' }
 }

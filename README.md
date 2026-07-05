@@ -72,6 +72,16 @@ This is a long-running worker (Telegram long-polling — no inbound port/domain 
 
 The included `railway.json` sets the Dockerfile build + restart-on-failure. The schema auto-applies on boot.
 
+### Optional: the waterfall dashboard
+
+By default the service opens no inbound port. To enable the observability dashboard (per-video transcript journeys, tier hit/miss/rate-limit/error stats, spend):
+
+1. Set `DASHBOARD_SECRET` on the service (≥16 chars, e.g. `openssl rand -hex 16`; shorter values are refused).
+2. Railway → service → **Settings → Networking → Generate Domain** (Railway injects `PORT` automatically).
+3. Open `https://<domain>/dashboard?key=<DASHBOARD_SECRET>`. In Telegram, `/waterfall` shows the same journeys inline.
+
+Leave `DASHBOARD_SECRET` unset to run exactly as before (long-polling only, no HTTP server).
+
 ## Commands
 
 | Command | What it does |
@@ -85,6 +95,7 @@ The included `railway.json` sets the Dockerfile build + restart-on-failure. The 
 | `/test <video url>` | Run the full pipeline on one video now |
 | `/check` | Check all channels for new episodes now |
 | `/status` | Counts + config |
+| `/waterfall` | Which transcript tier served (or failed) each recent video |
 | `/grader` | Grader configuration |
 
 Your **profile** is seeded from a sensible default on first boot — edit it with `/setprofile` so section ④ is tailored to you.

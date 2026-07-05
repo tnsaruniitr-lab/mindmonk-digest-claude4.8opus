@@ -5,6 +5,8 @@ import { addChannel, listChannels, removeChannel } from '../services/channels'
 import { getProfile, setProfile } from '../services/profile'
 import { getMinDurationMinutes, setSetting } from '../services/settings'
 import { claimById, enqueueVideo, getVideoByVideoId, resetVideo, setVideoStatus, statusCounts } from '../services/videos'
+import { recentJourneys } from '../services/waterfall'
+import { formatJourney } from '../util/journey'
 import { backfillLatest, latestVideo, runPoller } from '../scheduler/poller'
 import { NoTranscriptYet, processVideo } from '../pipeline/process-video'
 import { TranscriptRateLimited } from '../youtube/ytdlp'
@@ -96,6 +98,7 @@ I watch your favourite YouTube channels and, when they publish a new long-form e
 /channel &lt;channel url&gt; — summarize a channel's latest video
 /check — check all channels for new episodes now
 /status — counts &amp; config
+/waterfall — which transcript tier served each recent video
 /grader — grader configuration`
 
 bot.start((ctx) => ctx.reply('👋 Ready. Add a channel with /add <url>, then /help for everything.'))
@@ -210,6 +213,26 @@ bot.command('status', async (ctx) => {
     `Grader: ${graderConfigured ? config.GRADER_MODEL : 'not configured'}`,
   ]
   await ctx.reply(lines.join('\n')) // plain text — no HTML escaping needed
+})
+
+// Transcript-waterfall observability: per-video journey of which tier hit/failed.
+bot.command('waterfall', async (ctx) => {
+  const rows = await recentJourneys(10)
+  if (!rows.length) return ctx.reply('No videos yet — the waterfall log fills as videos are processed.')
+  const badge: Record<string, string> = { done: '✅', failed: '❌', no_transcript: '🚫', skipped: '⏭️', pending: '⏳', processing: '⚙️' }
+  const lines = rows.map((r) => {
+    const title = (r.title ?? r.video_id).slice(0, 48)
+    const dropped = r.dropped_events > 0 ? `(+${r.dropped_events} earlier attempts) ` : ''
+    const journey =
+      formatJourney(r.events) ||
+      (r.status === 'pending' || r.status === 'processing'
+        ? '(queued — not attempted yet)'
+        : '(no attempts logged — pre-dates waterfall logging, or never reached the transcript step)')
+    const src = r.transcript_source ? ` [${r.transcript_source}]` : ''
+    return `${badge[r.status] ?? '❔'} ${title}${src}\n      ${dropped}${journey}`
+  })
+  const text = '🔀 Transcript waterfall — last 10 videos:\n\n' + lines.join('\n') // plain text — no HTML parse mode
+  await ctx.reply(text.length > 4096 ? `${text.slice(0, 4095)}…` : text) // Telegram hard limit
 })
 
 bot.command('grader', async (ctx) => {

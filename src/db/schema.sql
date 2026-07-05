@@ -104,6 +104,20 @@ create table if not exists transcripts (
   created_at timestamptz not null default now()
 );
 
+-- Waterfall observability: one row per transcript-acquisition attempt, so the
+-- dashboard//waterfall can show which tier served (or failed) each video --------
+create table if not exists waterfall_events (
+  id          bigserial primary key,   -- serial: stable ordering within a journey
+  video_id    text not null,           -- youtube video id
+  tier        text not null,           -- cache | supadata | audio | audio:groq | audio:openai
+  outcome     text not null,           -- hit | miss | rate_limited | error
+  detail      text,
+  duration_ms int,
+  created_at  timestamptz not null default now()
+);
+create index if not exists waterfall_events_video_idx   on waterfall_events(video_id);
+create index if not exists waterfall_events_created_idx on waterfall_events(created_at);
+
 -- Shared per-video digest cache (Phase 1): sections ①②③ computed once per video --
 create table if not exists video_digests (
   video_id      text primary key,     -- youtube video id

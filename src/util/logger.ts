@@ -12,6 +12,7 @@ const SECRETS: readonly string[] = [
   config.OPENAI_API_KEY,
   config.SUPADATA_API_KEY,
   config.TELEGRAM_BOT_TOKEN,
+  config.DASHBOARD_SECRET,
 ].filter((s): s is string => typeof s === 'string' && s.length >= 6)
 
 function ts(): string {
