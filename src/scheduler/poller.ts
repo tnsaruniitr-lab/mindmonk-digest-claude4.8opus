@@ -2,6 +2,7 @@ import Parser from 'rss-parser'
 import type { ChannelRow } from '../types'
 import { markChannelChecked } from '../services/channels'
 import { listPollableChannels, type PollableChannel } from '../services/subscriptions'
+import { enqueueDelivery } from '../services/user-deliveries'
 import { enqueueVideo, videoExists } from '../services/videos'
 import { feedUrl, parseVideoId } from '../util/youtube'
 import { log } from '../util/logger'
@@ -70,6 +71,28 @@ export async function latestVideo(
     if (vid) return { videoId: vid, title: item.title ?? null, publishedAt: item.isoDate ?? null }
   }
   return null
+}
+
+/** Sample a channel's LATEST episode for a fresh subscriber: enqueue the video for
+ *  Stage A (no-op if it's already known/digested) and, for non-owners, a delivery
+ *  row that bypasses the since watermark — so subscribing produces a visible digest
+ *  instead of "wait for the next upload". The owner is served by the inline path.
+ *  Fire-and-forget from the subscribe handler; failures only cost the sample. */
+export async function sampleLatestForSubscriber(
+  userId: string,
+  isOwner: boolean,
+  ch: ChannelRow,
+): Promise<void> {
+  const latest = await latestVideo(ch.youtube_channel_id)
+  if (!latest) return
+  await enqueueVideo({
+    videoId: latest.videoId,
+    channelId: ch.id,
+    title: latest.title,
+    publishedAt: latest.publishedAt,
+  })
+  if (!isOwner) await enqueueDelivery(userId, latest.videoId)
+  log.info(`Sample queued for new subscriber: ${latest.videoId} (${ch.title ?? ch.youtube_channel_id})`)
 }
 
 /** Queue the latest N items from a channel regardless of age (used on /add). */

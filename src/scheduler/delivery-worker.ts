@@ -100,8 +100,18 @@ async function deliverOne(d: UserDeliveryRow): Promise<'paused' | void> {
       await assertUnderDailyCap()
       const [digest, video] = await Promise.all([getVideoDigest(d.video_id), getVideoByVideoId(d.video_id)])
       if (!digest || !video) {
-        // Shared Stage-A output not visible (should be rare — fan-out runs after the digest
-        // is cached, but a force-recompute could be mid-overwrite). Back off, with a deadline.
+        // Source video reached a terminal non-digest state (a sampled latest episode
+        // can be a short, live, or transcript-less) — skip honestly instead of
+        // spinning until the deadline.
+        if (video && ['skipped', 'failed', 'no_transcript'].includes(video.status)) {
+          await markDeliverySkipped(
+            d.id,
+            `source video ${video.status}${video.skip_reason ? `: ${video.skip_reason}` : ''}`.slice(0, 200),
+          )
+          return
+        }
+        // Otherwise Stage A just hasn't produced it yet (queued/processing, or a
+        // force-recompute mid-overwrite). Back off, with a deadline.
         const ageMs = Date.now() - new Date(d.created_at).getTime()
         if (ageMs > STAGE_A_DEADLINE_MS) {
           await markDeliveryFailed(d.id, 'stage A never produced a digest (deadline exceeded)')

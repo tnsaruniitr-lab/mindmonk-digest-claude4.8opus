@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "login-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "scripts/preview-login.ts"],
+      "port": 5184
+    }
+  ]
+}

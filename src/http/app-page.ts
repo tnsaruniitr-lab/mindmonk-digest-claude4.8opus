@@ -23,33 +23,114 @@ export const LOGIN_PAGE = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
-<title>MindMonk — Sign in</title>
-<style>${THEME}
-  main { max-width:400px; margin:9vh auto; padding:0 16px; }
-  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:26px; }
-  h1 { font-size:20px; margin-bottom:4px; }
-  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
-  .tabs { display:flex; gap:6px; margin-bottom:18px; }
-  .tabs button { flex:1; background:#21262d; border:1px solid var(--border); color:var(--dim); }
-  .tabs button.active { background:#1f6feb; border-color:#1f6feb; color:#fff; }
-  label { display:block; font-size:13px; color:var(--dim); margin:12px 0 5px; }
+<title>MindMonk — Hours of podcasts, distilled to minutes</title>
+<style>
+  * { box-sizing:border-box; margin:0; }
+  :root { --ink:#0a0f14; --text:#eef3f6; --dim:#a8b8c2; --line:rgba(255,255,255,.09);
+          --red:#ff8f85; --green:#7ee2a0; }
+  html,body { height:100%; }
+  body { background:var(--ink); color:var(--text); font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         overflow-x:hidden; }
+
+  /* ---- cinematic backdrop: slow-drifting aerial video under layered dusk gradients ---- */
+  .bg, .bg video, .veil { position:fixed; inset:0; }
+  .bg { z-index:-2; background:linear-gradient(160deg,#0b1d1a 0%,#0e2530 45%,#37231a 100%); }
+  .bg video { width:100%; height:100%; object-fit:cover; animation:drift 42s ease-in-out infinite alternate; }
+  @keyframes drift { from { transform:scale(1.02) translateY(0); } to { transform:scale(1.13) translateY(-2.2%); } }
+  .veil { z-index:-1; background:
+      linear-gradient(105deg, rgba(7,11,15,.88) 0%, rgba(7,11,15,.55) 42%, rgba(7,11,15,.22) 68%, rgba(20,12,6,.55) 100%),
+      radial-gradient(120% 90% at 50% 118%, rgba(240,150,60,.28), transparent 55%),
+      linear-gradient(to top, rgba(7,11,15,.65), transparent 30%); }
+
+  /* ---- layout ---- */
+  .wrap { min-height:100%; display:grid; grid-template-columns:minmax(0,1.15fr) minmax(340px,420px);
+          gap:6vw; align-items:center; max-width:1200px; margin:0 auto; padding:9vh 6vw; }
+  @media (max-width:900px) { .wrap { grid-template-columns:1fr; gap:44px; padding:7vh 22px; } }
+
+  /* ---- hero copy ---- */
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:5.5vh; font-weight:650; letter-spacing:.02em; }
+  .brand .dot { width:34px; height:34px; border-radius:11px; display:grid; place-items:center; font-size:17px;
+    background:linear-gradient(135deg, rgba(240,160,70,.9), rgba(200,90,50,.85)); box-shadow:0 6px 24px rgba(230,140,60,.35); }
+  h1 { font-size:clamp(34px,4.6vw,58px); line-height:1.06; letter-spacing:-.022em; font-weight:760; }
+  h1 em { font-family:Georgia,'Times New Roman',serif; font-style:italic; font-weight:500;
+    background:linear-gradient(92deg,#ffd9a0,#f09b4a 60%,#e37b45); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .lede { margin-top:18px; max-width:46ch; color:var(--dim); font-size:clamp(15px,1.35vw,17.5px); }
+  .points { margin-top:4.5vh; display:grid; gap:13px; max-width:52ch; }
+  .pt { display:flex; gap:12px; align-items:baseline; color:#cdd9e1; font-size:14.5px; }
+  .pt b { color:var(--text); font-weight:640; }
+  .pt .n { flex:none; font-size:13px; color:#f3b56e; }
+  .beta { margin-top:4.5vh; font-size:12.5px; letter-spacing:.14em; text-transform:uppercase; color:rgba(240,180,120,.75); }
+
+  /* ---- staged entrance ---- */
+  .up { opacity:0; transform:translateY(18px); animation:up .9s cubic-bezier(.16,.84,.32,1) forwards; }
+  .d1{animation-delay:.08s} .d2{animation-delay:.22s} .d3{animation-delay:.38s} .d4{animation-delay:.55s}
+  .d5{animation-delay:.72s} .d6{animation-delay:.92s}
+  @keyframes up { to { opacity:1; transform:none; } }
+
+  /* ---- glass card ---- */
+  .card { background:rgba(11,16,22,.52); backdrop-filter:blur(20px) saturate(150%); -webkit-backdrop-filter:blur(20px) saturate(150%);
+    border:1px solid var(--line); border-radius:18px; padding:30px 28px 26px;
+    box-shadow:0 30px 80px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06); }
+  .card h2 { font-size:17px; font-weight:650; margin-bottom:18px; }
+  .tabs { display:flex; background:rgba(255,255,255,.06); border-radius:11px; padding:4px; margin-bottom:20px; }
+  .tabs button { flex:1; background:transparent; border:none; border-radius:8px; color:var(--dim); padding:9px 0;
+    font:inherit; font-size:14px; font-weight:600; cursor:pointer; transition:all .25s ease; }
+  .tabs button.active { background:linear-gradient(135deg,#e89543,#d06a3e); color:#fff; box-shadow:0 4px 18px rgba(224,128,60,.35); }
+  label { display:block; font-size:12.5px; letter-spacing:.03em; color:var(--dim); margin:14px 0 6px; }
+  input[type=text],input[type=email],input[type=password] { width:100%; background:rgba(8,12,17,.65); border:1px solid var(--line);
+    border-radius:10px; color:var(--text); padding:12px 14px; font:inherit; transition:border-color .2s, box-shadow .2s; }
+  input:focus { outline:none; border-color:rgba(240,160,80,.65); box-shadow:0 0 0 3px rgba(240,160,80,.18); }
+  .go { width:100%; margin-top:22px; background:linear-gradient(135deg,#efa14b,#d3653b); border:none; border-radius:11px;
+    color:#fff; padding:13px 16px; font:inherit; font-size:15px; font-weight:680; letter-spacing:.01em; cursor:pointer;
+    box-shadow:0 10px 30px rgba(228,130,60,.35); transition:transform .18s ease, box-shadow .25s ease, filter .2s; }
+  .go:hover { transform:translateY(-1px); filter:brightness(1.07); box-shadow:0 14px 36px rgba(228,130,60,.45); }
+  .go:active { transform:translateY(0); }
+  .go:disabled { opacity:.55; cursor:default; transform:none; }
   #msg { margin-top:14px; font-size:14px; min-height:20px; }
-  .go { width:100%; margin-top:18px; }
+  .muted{color:var(--dim)} .err{color:var(--red)} .ok{color:var(--green)}
+  .fine { margin-top:16px; font-size:12.5px; color:rgba(168,184,194,.75); text-align:center; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bg video { animation:none; }
+    .up { opacity:1; transform:none; animation:none; }
+    .go, .tabs button { transition:none; }
+  }
 </style>
 </head>
 <body>
-<main><div class="card">
-  <h1>🎙️ MindMonk</h1>
-  <div class="sub">Hours of podcasts, distilled to minutes — in your Telegram.</div>
-  <div class="tabs"><button id="tabIn" class="active">Sign in</button><button id="tabUp">Create account</button></div>
-  <form id="f">
-    <label>Email</label><input type="email" id="email" autocomplete="username" required>
-    <label>Password</label><input type="password" id="pw" autocomplete="current-password" required minlength="10">
-    <div id="inviteRow" style="display:none"><label>Invite code</label><input type="text" id="invite" autocomplete="off"></div>
-    <button class="go" id="go" type="submit">Sign in</button>
-  </form>
-  <div id="msg"></div>
-</div></main>
+<div class="bg" aria-hidden="true">
+  <video autoplay muted loop playsinline preload="metadata" src="/assets/hero.mp4"></video>
+</div>
+<div class="veil" aria-hidden="true"></div>
+<div class="wrap">
+  <section>
+    <div class="brand up d1"><span class="dot">🎙️</span> MindMonk</div>
+    <h1><span class="up d2" style="display:block">Hours of podcasts,</span>
+        <span class="up d3" style="display:block"><em>distilled</em> to minutes.</span></h1>
+    <p class="lede up d4">Follow the voices you trust. Every new long-form episode arrives in your Telegram as a calm,
+      four-part digest — graded for substance by a second, independent AI, and tailored to what you're building.</p>
+    <div class="points up d5">
+      <div class="pt"><span class="n">①</span><span><b>Key insights</b> — the ideas a sharp listener would underline</span></div>
+      <div class="pt"><span class="n">②</span><span><b>Patterns &amp; antipatterns</b> — what works, what to avoid</span></div>
+      <div class="pt"><span class="n">③</span><span><b>Second-opinion grade</b> — a separate model marks the homework</span></div>
+      <div class="pt"><span class="n">④</span><span><b>For you</b> — mapped to your goals, with concrete next actions</span></div>
+    </div>
+    <div class="beta up d6">Invite-only beta · digests delivered on Telegram</div>
+  </section>
+
+  <main class="card up d4">
+    <h2>Welcome</h2>
+    <div class="tabs"><button id="tabIn" class="active">Sign in</button><button id="tabUp">Create account</button></div>
+    <form id="f">
+      <label>Email</label><input type="email" id="email" autocomplete="username" required>
+      <label>Password</label><input type="password" id="pw" autocomplete="current-password" required minlength="10">
+      <div id="inviteRow" style="display:none"><label>Invite code</label><input type="text" id="invite" autocomplete="off"></div>
+      <button class="go" id="go" type="submit">Sign in</button>
+    </form>
+    <div id="msg"></div>
+    <div class="fine">One QR scan links your Telegram — digests flow from there.</div>
+  </main>
+</div>
 <script>
 (function () {
   var mode = 'in'
@@ -147,7 +228,7 @@ export const APP_PAGE = `<!doctype html>
     </div>
     <div id="chMsg" class="muted" style="min-height:20px; margin-top:8px"></div>
     <ul id="chList"></ul>
-    <div class="muted" style="font-size:13px; margin-top:6px">Digests start with each channel's next long-form upload.</div>
+    <div class="muted" style="font-size:13px; margin-top:6px">A sample digest of the latest episode arrives shortly after you subscribe — then every new long-form upload.</div>
   </div>
 
   <h2>My profile</h2>
@@ -248,9 +329,9 @@ export const APP_PAGE = `<!doctype html>
     post('/api/subscriptions', { input: input.value.trim() }).then(function (r) {
       btn.disabled = false
       if (!r.ok) { msg.className = 'err'; msg.textContent = r.j.error || 'failed'; return }
-      msg.className = 'ok'; msg.textContent = '✓ subscribed to ' + r.j.title
+      msg.className = 'ok'; msg.textContent = '✓ subscribed to ' + r.j.title + ' — sample digest on its way (a few minutes)'
       input.value = ''
-      refreshSubs()
+      refreshSubs(); setTimeout(refreshDigests, 4000)
     }).catch(function () { btn.disabled = false })
   })
   document.getElementById('chList').addEventListener('click', function (e) {

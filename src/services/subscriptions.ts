@@ -34,7 +34,10 @@ export interface SubscriptionRow {
   created_at: string
 }
 
-export async function subscribe(user: User, channelInput: string): Promise<{ ok: true; title: string } | { ok: false; error: string }> {
+export async function subscribe(
+  user: User,
+  channelInput: string,
+): Promise<{ ok: true; title: string; channel: ChannelRow } | { ok: false; error: string }> {
   const count = await one<{ n: number }>(
     `select count(*)::int as n from subscriptions where user_id = $1 and active = true`,
     [user.id],
@@ -55,7 +58,7 @@ export async function subscribe(user: User, channelInput: string): Promise<{ ok:
            since = case when subscriptions.active then subscriptions.since else now() end`,
     [user.id, ch.id],
   )
-  return { ok: true, title: ch.title ?? ch.handle ?? ch.youtube_channel_id }
+  return { ok: true, title: ch.title ?? ch.handle ?? ch.youtube_channel_id, channel: ch }
 }
 
 export async function listSubscriptions(userId: string): Promise<SubscriptionRow[]> {

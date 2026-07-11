@@ -53,6 +53,19 @@ export async function fanOutVideo(input: {
   return rows.length
 }
 
+/** Enqueue a single delivery for ONE user, bypassing the since watermark — used to
+ *  sample a channel's LATEST episode right after they subscribe, so the click
+ *  produces a visible result instead of "wait for the next upload". Idempotent;
+ *  true iff a NEW row was created. */
+export async function enqueueDelivery(userId: string, videoId: string): Promise<boolean> {
+  const rows = await query<{ id: string }>(
+    `insert into user_deliveries(user_id, video_id) values($1, $2)
+     on conflict(user_id, video_id) do nothing returning id`,
+    [userId, videoId],
+  )
+  return rows.length > 0
+}
+
 /** Atomically claim the next due delivery (FOR UPDATE SKIP LOCKED — race-safe). */
 export async function claimNextDelivery(): Promise<UserDeliveryRow | null> {
   return one<UserDeliveryRow>(

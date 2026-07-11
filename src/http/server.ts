@@ -1,4 +1,6 @@
-import { createServer, type IncomingMessage } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createReadStream, statSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { timingSafeEqual } from 'node:crypto'
 import QRCode from 'qrcode'
 import { config } from '../config'
@@ -16,7 +18,7 @@ import { recentJourneys, sourceCounts, spendSummary, tierStats } from '../servic
 import { channelsOverview, getDigestRendered, jobState, latestDigest, recentDigests } from '../services/overview'
 import { statusCounts } from '../services/videos'
 import { addChannel } from '../services/channels'
-import { backfillLatest } from '../scheduler/poller'
+import { backfillLatest, sampleLatestForSubscriber } from '../scheduler/poller'
 import { executeVideoNow, prepareVideoNow } from '../services/run-now'
 import { parseVideoId } from '../util/youtube'
 
@@ -31,6 +33,39 @@ function authorized(url: URL): boolean {
   const given = Buffer.from(url.searchParams.get('key') ?? '')
   const want = Buffer.from(config.DASHBOARD_SECRET)
   return given.length === want.length && timingSafeEqual(given, want)
+}
+
+// The landing hero video, shipped in the image. Streamed with byte-range support —
+// Safari refuses to play <video> from servers that ignore Range requests.
+const HERO_PATH = fileURLToPath(new URL('../../assets/hero.mp4', import.meta.url))
+
+function serveHeroVideo(req: IncomingMessage, res: ServerResponse): void {
+  let size: number
+  try {
+    size = statSync(HERO_PATH).size
+  } catch {
+    res.writeHead(404, { 'content-type': 'text/plain' }).end('not found')
+    return
+  }
+  const common = {
+    'content-type': 'video/mp4',
+    'accept-ranges': 'bytes',
+    'cache-control': 'public, max-age=604800',
+  }
+  const m = typeof req.headers.range === 'string' ? req.headers.range.match(/^bytes=(\d*)-(\d*)$/) : null
+  if (m && (m[1] || m[2])) {
+    const start = m[1] ? parseInt(m[1], 10) : Math.max(0, size - parseInt(m[2], 10))
+    const end = m[1] && m[2] ? Math.min(parseInt(m[2], 10), size - 1) : size - 1
+    if (start >= size || start > end) {
+      res.writeHead(416, { 'content-range': `bytes */${size}` }).end()
+      return
+    }
+    res.writeHead(206, { ...common, 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': end - start + 1 })
+    createReadStream(HERO_PATH, { start, end }).pipe(res)
+  } else {
+    res.writeHead(200, { ...common, 'content-length': size })
+    createReadStream(HERO_PATH).pipe(res)
+  }
 }
 
 const MAX_BODY_BYTES = 16 * 1024
@@ -124,6 +159,10 @@ export function startHttpServer(): void {
         res.writeHead(200, { 'content-type': 'text/plain' }).end('ok')
         return
       }
+      if (req.method === 'GET' && url.pathname === '/assets/hero.mp4') {
+        serveHeroVideo(req, res)
+        return
+      }
 
       // ---- Multi-user app: session-cookie auth (spec §5–§7) -------------------
       if (req.method === 'GET' && url.pathname === '/') {
@@ -213,7 +252,15 @@ export function startHttpServer(): void {
           if (!input) return json(res, 400, { error: 'channel url, @handle, or UC… id required' })
           try {
             const r = await subscribe(u, input)
-            return r.ok ? json(res, 200, r) : json(res, 422, r)
+            if (r.ok) {
+              // Fire-and-forget: sample the channel's latest episode so the click
+              // produces a digest, not an empty "wait for the next upload" state.
+              void sampleLatestForSubscriber(u.id, u.is_owner, r.channel).catch((e) =>
+                log.warn('sample-on-subscribe failed', String(e)),
+              )
+              return json(res, 200, { ok: true, title: r.title })
+            }
+            return json(res, 422, r)
           } catch (e) {
             return json(res, 422, { error: scrub(String(e)).slice(0, 300) })
           }
