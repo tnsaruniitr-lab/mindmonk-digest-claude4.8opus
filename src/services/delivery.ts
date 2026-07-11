@@ -77,9 +77,16 @@ export class PartialDeliveryError extends Error {
 /** Send a (chunked) HTML digest to a specific chat and return the message ids. Resumes from
  *  `alreadySent` (chunks delivered on a prior attempt) so a retry of the SAME html never
  *  re-sends a chunk — callers MUST pass the same html across retries (Stage B persists the
- *  rendered text on the delivery row for exactly this). Throws PartialDeliveryError if a
- *  chunk fails after others succeeded, so the caller can save progress before re-queueing. */
-export async function deliverToChat(chatId: string, html: string, alreadySent: number[] = []): Promise<number[]> {
+ *  rendered text on the delivery row for exactly this). `onChunk` is awaited after EVERY
+ *  successful send so the caller can checkpoint progress — a crash/redeploy mid-send then
+ *  duplicates at most one chunk instead of the whole digest. Throws PartialDeliveryError if
+ *  anything fails after a chunk succeeded, so the caller can persist before re-queueing. */
+export async function deliverToChat(
+  chatId: string,
+  html: string,
+  alreadySent: number[] = [],
+  onChunk?: (messageIds: number[]) => Promise<void>,
+): Promise<number[]> {
   const chunks = chunkHtml(html)
   const messageIds = [...alreadySent]
   for (let i = alreadySent.length; i < chunks.length; i++) {
@@ -89,6 +96,9 @@ export async function deliverToChat(chatId: string, html: string, alreadySent: n
         link_preview_options: { is_disabled: true },
       })
       messageIds.push(msg.message_id)
+      // Checkpoint AFTER the send: if this throws, the chunk still went out, so it
+      // must surface as partial progress (below), never as a clean pre-send failure.
+      if (onChunk) await onChunk([...messageIds])
     } catch (err) {
       // Surface partial progress only if we'd actually sent something this run; otherwise
       // let the original error through unchanged (nothing to resume).

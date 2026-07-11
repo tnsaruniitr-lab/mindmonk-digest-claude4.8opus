@@ -92,12 +92,6 @@ async function deliverOne(d: UserDeliveryRow): Promise<'paused' | void> {
       await markDeliverySkipped(d.id, 'user paused')
       return
     }
-    if (!user.chat_id) {
-      // They unlinked between fan-out and delivery. Don't hold the row open — the
-      // digest stays readable on the web ("my digests"); Telegram just can't receive it.
-      await markDeliverySkipped(d.id, 'telegram not linked')
-      return
-    }
 
     if (!html) {
       // First attempt: personalize ④ from the shared Stage-A digest. This is the only LLM
@@ -141,7 +135,20 @@ async function deliverOne(d: UserDeliveryRow): Promise<'paused' | void> {
       await saveDeliveryRender(d.id, personalizeRes, html)
     }
 
-    const messageIds = await deliverToChat(user.chat_id, html, alreadySent)
+    if (!user.chat_id) {
+      // They unlinked between fan-out and delivery. The render above is persisted, so
+      // the digest IS readable on the web ("my digests") — Telegram just can't receive
+      // it. Checked AFTER rendering for exactly that reason.
+      await markDeliverySkipped(d.id, 'telegram not linked')
+      return
+    }
+
+    // Checkpoint message ids after EVERY chunk — a crash/redeploy mid-send then
+    // duplicates at most one chunk on retry instead of the whole digest, and a
+    // markDeliveryDone failure retries as a no-op send.
+    const messageIds = await deliverToChat(user.chat_id, html, alreadySent, (ids) =>
+      saveDeliveryProgress(d.id, ids),
+    )
     await markDeliveryDone(d.id, messageIds)
     log.info(`Delivered to user ${d.user_id}: ${d.video_id}${alreadySent.length ? ' (resumed)' : ''}`)
   } catch (err) {

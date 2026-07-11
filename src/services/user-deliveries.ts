@@ -5,6 +5,7 @@
 // linked Telegram chat. Mirrors the race-safe videos queue (FOR UPDATE SKIP LOCKED).
 
 import { one, query } from '../db/db'
+import { config } from '../config'
 import type { UserDeliveryRow } from '../types'
 
 /**
@@ -12,6 +13,9 @@ import type { UserDeliveryRow } from '../types'
  * active subscription of an active, non-owner user with a LINKED Telegram chat,
  * whose per-sub watermark (`since`) and min-duration accept this video.
  * - The owner is excluded: they're served by the legacy inline path in process-video.
+ *   That exclusion is DOUBLE-keyed — is_owner AND the owner's chat id — so a linked
+ *   web account that was never promoted (OWNER_EMAIL unset/mismatched) can't receive
+ *   a second copy of what the inline path already sent to TELEGRAM_CHAT_ID.
  * - Videos without a published_at never fan out (only on-demand rows lack it — an
  *   on-demand fetch must not blast subscribers with back-catalog).
  * - Unknown duration is included (matches the shared pipeline's fail-open filter).
@@ -32,12 +36,19 @@ export async function fanOutVideo(input: {
          join users u          on u.id = s.user_id
          join telegram_links tl on tl.user_id = s.user_id
         where s.channel_id = $2 and s.active
-          and u.status = 'active' and not u.is_owner
+          and u.status = 'active' and not u.is_owner and tl.chat_id <> $6
           and $3::timestamptz > s.since
           and ($4::int is null or $4 >= coalesce(s.min_duration_minutes, $5) * 60)
      on conflict(user_id, video_id) do nothing
      returning id`,
-    [input.videoId, input.channelId, input.publishedAt, input.durationSeconds, input.globalMinMinutes],
+    [
+      input.videoId,
+      input.channelId,
+      input.publishedAt,
+      input.durationSeconds,
+      input.globalMinMinutes,
+      config.TELEGRAM_CHAT_ID,
+    ],
   )
   return rows.length
 }
@@ -129,6 +140,12 @@ export async function pendingDeliveryCount(): Promise<number> {
 /** Telegram said 403 — the user blocked the bot. Stop delivering to them. */
 export async function pauseUser(userId: string): Promise<void> {
   await query(`update users set status = 'paused' where id = $1`, [userId])
+}
+
+/** Recovery path for pauseUser: called when the user re-links Telegram or sends
+ *  /start again (they unblocked the bot) — deliveries resume. */
+export async function unpauseUser(userId: string): Promise<void> {
+  await query(`update users set status = 'active' where id = $1 and status = 'paused'`, [userId])
 }
 
 // ----- Session-scoped reads for the web console ("my digests") ------------------

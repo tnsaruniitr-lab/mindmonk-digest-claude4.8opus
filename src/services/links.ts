@@ -42,11 +42,22 @@ export async function redeemLinkToken(token: string, chatId: string): Promise<Re
     [chatId],
   )
   if (existing && existing.user_id !== row.user_id) return { kind: 'chat_taken', email: existing.email }
+  // Detect a FRESH link (no prior telegram_links row) before the upsert: an
+  // unlink→relink must not resurrect stale subscription watermarks — the user
+  // couldn't receive anything while unlinked, and fanning out that whole gap
+  // backlog would burn transcript+extract spend in one burst.
+  const hadLink = !!(await one('select 1 from telegram_links where user_id = $1', [row.user_id]))
   await query(
     `insert into telegram_links(user_id, chat_id) values($1, $2)
      on conflict(user_id) do update set chat_id = excluded.chat_id, linked_at = now()`,
     [row.user_id, chatId],
   )
+  if (!hadLink) {
+    await query(`update subscriptions set since = now() where user_id = $1 and active`, [row.user_id])
+  }
+  // Linking is also the recovery path from a Telegram-403 pause: they clearly
+  // want (and can now receive) deliveries again.
+  await query(`update users set status = 'active' where id = $1 and status = 'paused'`, [row.user_id])
   // Owner bootstrap (spec §8): the account that links the historical owner chat
   // becomes the owner and inherits every existing catalog channel as subscriptions.
   // Gated on OWNER_EMAIL so ownership can't be transferred by phishing the owner into

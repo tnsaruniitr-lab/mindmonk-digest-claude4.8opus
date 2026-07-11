@@ -138,10 +138,12 @@ export async function processVideo(
 
   // --- Phase 2 fan-out (Stage A → Stage B hand-off) --------------------------------
   // The shared ①②③ are cached; enqueue one user_deliveries row per eligible
-  // subscriber (per-sub `since` watermark + min-duration re-checked in SQL). The
-  // delivery worker personalizes ④ per user and sends. Scheduled path only — an
-  // on-demand force must never blast subscribers with back-catalog videos.
-  if (!opts.force && video.channel_id) {
+  // subscriber. Runs on the FORCE path too — otherwise an owner /fetch of a fresh
+  // upload would mark it done and permanently starve subscribers of it. Back-catalog
+  // blast protection lives inside fanOutVideo: null published_at never fans out, the
+  // per-sub `since` watermark excludes older videos, per-sub min-duration is
+  // re-checked in SQL, and unique(user_id, video_id) makes re-runs no-ops.
+  if (video.channel_id) {
     const fanned = await fanOutVideo({
       videoId: video.video_id,
       channelId: video.channel_id,

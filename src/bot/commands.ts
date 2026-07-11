@@ -7,6 +7,7 @@ import { getMinDurationMinutes, setSetting } from '../services/settings'
 import { statusCounts } from '../services/videos'
 import { runVideoNow } from '../services/run-now'
 import { redeemLinkToken, unlinkTelegram, userByChatId } from '../services/links'
+import { unpauseUser } from '../services/user-deliveries'
 import { recentJourneys } from '../services/waterfall'
 import { formatJourney } from '../util/journey'
 import { backfillLatest, latestVideo, runPoller } from '../scheduler/poller'
@@ -98,11 +99,15 @@ bot.start(async (ctx) => {
     }
   }
   const isOwner = ctx.chat.id.toString() === config.TELEGRAM_CHAT_ID
-  return ctx.reply(
-    isOwner
-      ? '👋 Ready. Add a channel with /add <url>, then /help for everything.'
-      : '👋 To connect this bot, sign in to the MindMonk web app and scan the "Link Telegram" QR code.',
-  )
+  if (isOwner) return ctx.reply('👋 Ready. Add a channel with /add <url>, then /help for everything.')
+  // A plain /start from an already-linked chat is the "I unblocked the bot" signal —
+  // clear a Telegram-403 pause so their deliveries resume.
+  const linkedUser = await userByChatId(ctx.chat.id.toString())
+  if (linkedUser) {
+    await unpauseUser(linkedUser.id)
+    return ctx.reply(`👋 You're linked as ${linkedUser.email} — digests for your channels arrive here. Manage them in the web app.`)
+  }
+  return ctx.reply('👋 To connect this bot, sign in to the MindMonk web app and scan the "Link Telegram" QR code.')
 })
 
 bot.command('unlink', async (ctx) => {

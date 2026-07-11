@@ -241,6 +241,12 @@ export function startHttpServer(): void {
       if (req.method === 'GET' && myDigest) {
         const u = await requestUser(req)
         if (!u) return redirect(res, '/login')
+        // Strict shape check — a 36-char non-uuid (e.g. all dashes) would otherwise
+        // hit an unhandled uuid-cast error in Postgres and 500 instead of 404.
+        if (!UUID_RE.test(myDigest[1])) {
+          res.writeHead(404, { 'content-type': 'text/plain' }).end('digest not found')
+          return
+        }
         const d = await getDeliveryForUser(myDigest[1], u.id)
         if (!d || !d.rendered) {
           res.writeHead(404, { 'content-type': 'text/plain' }).end('digest not found')

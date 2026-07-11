@@ -8,7 +8,11 @@ import { log, scrub } from '../util/logger'
 const PER_TICK = 4
 const MAX_ATTEMPTS_PROCESS = 6 // hard failures (network/model) before giving up
 const MAX_ATTEMPTS_TRANSCRIPT = 20 // ~retry window for lagging auto-captions
-const STALE_MINUTES = 15 // requeue videos stuck in 'processing' this long
+// Requeue videos stuck in 'processing' this long. Generous on purpose: a long
+// episode's audio download + chunked ASR through the proxy can legitimately run
+// >15m, and reaping a STILL-RUNNING claim double-processes it (duplicate owner
+// delivery + double ASR spend). Crash recovery just waits a little longer.
+const STALE_MINUTES = 45
 
 let running = false
 
@@ -37,7 +41,9 @@ export async function processOne(v: VideoRow): Promise<'paused' | void> {
     const res = await processVideo(v)
     if (res.kind === 'delivered') {
       await setVideoStatus(v.id, { status: 'done', markProcessed: true, is_long_form: true })
-      log.info(`Delivered digest: ${v.title ?? v.video_id}`)
+      // "Processed", not "Delivered" — the owner send is conditional now (a
+      // subscriber-only channel produces fan-out rows, not an owner delivery).
+      log.info(`Processed: ${v.title ?? v.video_id}`)
     } else {
       await setVideoStatus(v.id, {
         status: 'skipped',

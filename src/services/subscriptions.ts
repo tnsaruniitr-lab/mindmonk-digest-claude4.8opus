@@ -1,4 +1,5 @@
 import { one, query } from '../db/db'
+import { config } from '../config'
 import { addChannel, catalogChannel } from './channels'
 import type { ChannelRow } from '../types'
 import type { User } from './auth'
@@ -12,12 +13,15 @@ const MAX_CHANNELS_PER_USER = 10
 
 // The recurring eligibility legs for fan-out-driving subscriptions: the user is
 // active (not paused via Telegram 403) and has a linked chat to deliver to. The
-// owner is excluded — they're served by the legacy inline path in process-video.
-const FANOUT_SUB_JOIN = `
+// owner is excluded — they're served by the legacy inline path in process-video —
+// and the exclusion is double-keyed (is_owner AND the owner's chat id) so a linked
+// account that was never promoted can't double-drive polling or receive dupes.
+// `ownerChatParam` is the SQL placeholder (e.g. '$1') bound to config.TELEGRAM_CHAT_ID.
+const fanoutSubJoin = (ownerChatParam: string) => `
   from subscriptions s
   join users u           on u.id = s.user_id
   join telegram_links tl on tl.user_id = s.user_id
- where s.active and u.status = 'active' and not u.is_owner`
+ where s.active and u.status = 'active' and not u.is_owner and tl.chat_id <> ${ownerChatParam}`
 
 export interface SubscriptionRow {
   id: string
@@ -89,10 +93,11 @@ export async function listPollableChannels(): Promise<PollableChannel[]> {
        from channels c
        left join lateral (
          select min(s.since) as min_since
-           ${FANOUT_SUB_JOIN} and s.channel_id = c.id
+           ${fanoutSubJoin('$1')} and s.channel_id = c.id
        ) sw on true
       where c.active = true or sw.min_since is not null
       order by c.created_at asc`,
+    [config.TELEGRAM_CHAT_ID],
   )
 }
 
@@ -104,8 +109,8 @@ export async function minSubscriberDurationMinutes(
 ): Promise<number | null> {
   const row = await one<{ m: number | null }>(
     `select min(coalesce(s.min_duration_minutes, $2))::int as m
-       ${FANOUT_SUB_JOIN} and s.channel_id = $1`,
-    [channelId, globalMinMinutes],
+       ${fanoutSubJoin('$3')} and s.channel_id = $1`,
+    [channelId, globalMinMinutes, config.TELEGRAM_CHAT_ID],
   )
   return row?.m ?? null
 }
