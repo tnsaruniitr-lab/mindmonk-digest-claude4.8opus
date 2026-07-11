@@ -136,7 +136,7 @@ export const APP_PAGE = `<!doctype html>
       <img id="qr" alt="QR code">
       <div class="dl">or tap: <a id="deep" target="_blank" rel="noreferrer"></a></div>
     </div>
-    <div id="note">Link your Telegram so your digests can be delivered there. Per-account delivery is rolling out — for now your channels are saved to your account.</div>
+    <div id="note">Link your Telegram — digests for your channels are delivered there, personalized to your profile below.</div>
   </div>
 
   <h2>My channels</h2>
@@ -147,6 +147,21 @@ export const APP_PAGE = `<!doctype html>
     </div>
     <div id="chMsg" class="muted" style="min-height:20px; margin-top:8px"></div>
     <ul id="chList"></ul>
+    <div class="muted" style="font-size:13px; margin-top:6px">Digests start with each channel's next long-form upload.</div>
+  </div>
+
+  <h2>My profile</h2>
+  <div class="card">
+    <textarea id="pfText" rows="5" maxlength="4000" placeholder="Who you are, your goals, current projects — section ④ of every digest is tailored to this." style="width:100%; resize:vertical"></textarea>
+    <div class="row" style="justify-content:space-between; margin-top:8px">
+      <span id="pfMsg" class="muted"></span>
+      <button id="pfSave">Save profile</button>
+    </div>
+  </div>
+
+  <h2>My digests</h2>
+  <div class="card">
+    <ul id="dgList"></ul>
   </div>
 </main>
 <script>
@@ -244,7 +259,29 @@ export const APP_PAGE = `<!doctype html>
     post('/api/subscriptions/remove', { id: id }).then(refreshSubs)
   })
 
-  refreshMe(); refreshSubs()
+  function refreshProfile() {
+    get('/api/profile').then(function (r) { document.getElementById('pfText').value = r.profile || '' })
+  }
+  document.getElementById('pfSave').addEventListener('click', function () {
+    var btn = document.getElementById('pfSave'); var msg = document.getElementById('pfMsg')
+    btn.disabled = true; msg.textContent = 'saving…'
+    post('/api/profile', { text: document.getElementById('pfText').value }).then(function (r) {
+      btn.disabled = false
+      msg.className = r.ok ? 'ok' : 'err'
+      msg.textContent = r.ok ? '✓ saved' : (r.j.error || 'failed')
+    }).catch(function () { btn.disabled = false; msg.className = 'err'; msg.textContent = 'network error' })
+  })
+
+  function renderDigests(digests) {
+    document.getElementById('dgList').innerHTML = digests.map(function (d) {
+      var name = d.title || '(untitled)'
+      var body = d.has_render ? '<a href="/app/digest/' + esc(d.id) + '">' + esc(name) + '</a>' : esc(name)
+      return '<li><span>' + body + '</span><span class="pill ' + (d.status === 'delivered' ? 'on' : 'off') + '">' + esc(d.status) + '</span></li>'
+    }).join('') || '<li class="muted">no digests yet — they arrive as your channels publish new episodes</li>'
+  }
+  function refreshDigests() { get('/api/digests').then(function (r) { renderDigests(r.digests) }) }
+
+  refreshMe(); refreshSubs(); refreshProfile(); refreshDigests()
 })()
 </script>
 </body>

@@ -60,3 +60,10 @@ export async function removeChannel(needle: string): Promise<ChannelRow | null> 
 export async function markChannelChecked(id: string): Promise<void> {
   await query('update channels set last_checked_at = now() where id = $1', [id])
 }
+
+/** Does the OWNER follow this channel? (`channels.active` keeps its legacy meaning:
+ *  "in the owner's polled set"; subscriber interest lives on subscriptions.) */
+export async function channelIsActive(id: string): Promise<boolean> {
+  const row = await one<{ active: boolean }>('select active from channels where id = $1', [id])
+  return row?.active ?? false
+}

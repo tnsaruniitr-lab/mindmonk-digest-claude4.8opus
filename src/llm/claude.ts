@@ -5,12 +5,15 @@ import { assertUnderDailyCap, recordLlmUsage } from '../cost/ledger'
 
 const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY })
 
-/** Primary model call (insight extraction + personalization). Returns text. */
+/** Primary model call (insight extraction + personalization). Returns text.
+ *  userId/videoId tag the spend row for per-user/per-video cost attribution. */
 export async function callClaude(opts: {
   system: string
   user: string
   maxTokens?: number
   model?: string
+  userId?: string
+  videoId?: string
 }): Promise<string> {
   const model = opts.model || config.ANTHROPIC_MODEL
   await assertUnderDailyCap()
@@ -29,6 +32,8 @@ export async function callClaude(opts: {
     model,
     inputTokens: res.usage.input_tokens,
     outputTokens: res.usage.output_tokens,
+    userId: opts.userId,
+    videoId: opts.videoId,
   })
 
   const text = res.content

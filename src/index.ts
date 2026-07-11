@@ -6,6 +6,7 @@ import { migrate } from './db/migrate'
 import { ensureProfileSeeded } from './services/profile'
 import { runPoller } from './scheduler/poller'
 import { runWorker } from './scheduler/worker'
+import { runDeliveryWorker } from './scheduler/delivery-worker'
 import { startHttpServer } from './http/server'
 import { purgeExpiredSessions } from './services/auth'
 import { log } from './util/logger'
@@ -31,7 +32,10 @@ async function main(): Promise<void> {
     runPoller().catch((e) => log.error('poller tick failed', String(e)))
   })
   cron.schedule(config.WORKER_CRON, () => {
-    runWorker().catch((e) => log.error('worker tick failed', String(e)))
+    // Stage A (shared per-video work) then Stage B (per-user delivery fan-out).
+    runWorker()
+      .then(() => runDeliveryWorker())
+      .catch((e) => log.error('worker tick failed', String(e)))
   })
 
   // Telegraf long-polling. Do NOT await — the promise resolves only on stop.
@@ -47,6 +51,7 @@ async function main(): Promise<void> {
   setTimeout(() => {
     runPoller()
       .then(() => runWorker())
+      .then(() => runDeliveryWorker())
       .catch((e) => log.error('initial pass failed', String(e)))
   }, 5_000)
 

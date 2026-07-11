@@ -1,6 +1,7 @@
 import Parser from 'rss-parser'
 import type { ChannelRow } from '../types'
-import { listChannels, markChannelChecked } from '../services/channels'
+import { markChannelChecked } from '../services/channels'
+import { listPollableChannels, type PollableChannel } from '../services/subscriptions'
 import { enqueueVideo, videoExists } from '../services/videos'
 import { feedUrl, parseVideoId } from '../util/youtube'
 import { log } from '../util/logger'
@@ -13,12 +14,14 @@ function itemVideoId(item: { link?: string; id?: string }): string | null {
 
 let polling = false
 
-/** Poll every active channel's RSS feed and enqueue genuinely-new uploads. */
+/** Poll every pollable channel's RSS feed and enqueue genuinely-new uploads.
+ *  Pollable = the owner's active channels PLUS catalog channels with at least one
+ *  fan-out-eligible subscription (Phase 2). */
 export async function runPoller(): Promise<void> {
   if (polling) return // guard against overlapping cron ticks / manual /check
   polling = true
   try {
-    const channels = await listChannels(true)
+    const channels = await listPollableChannels()
     for (const ch of channels) {
       try {
         await pollChannel(ch)
@@ -31,11 +34,14 @@ export async function runPoller(): Promise<void> {
   }
 }
 
-async function pollChannel(ch: ChannelRow): Promise<void> {
+async function pollChannel(ch: PollableChannel): Promise<void> {
   const feed = await parser.parseURL(feedUrl(ch.youtube_channel_id))
-  // Only treat uploads published AFTER the channel was added as "new" — avoids
-  // dumping the whole back catalogue on first poll.
-  const since = new Date(ch.created_at).getTime()
+  // Only treat uploads published AFTER the earliest interested party's watermark as
+  // "new" — the owner's watermark is channel.created_at, a subscriber's is their
+  // subscription's `since` (LEAST of the two, computed in listPollableChannels).
+  // Fan-out then re-filters per subscriber, so a video enqueued because of one
+  // user's watermark never leaks to another whose watermark is later.
+  const since = new Date(ch.poll_since ?? ch.created_at).getTime()
   let queued = 0
   for (const item of feed.items) {
     const vid = itemVideoId(item)

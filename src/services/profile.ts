@@ -19,3 +19,21 @@ export async function ensureProfileSeeded(): Promise<void> {
   const current = await getProfile()
   if (!current.trim()) await setProfile(SEED_PROFILE)
 }
+
+// ----- Per-user profiles (Phase 2) — drive each subscriber's section ④ ----------
+
+export async function getUserProfileText(userId: string): Promise<string> {
+  const row = await one<{ profile_text: string }>(
+    'select profile_text from user_profiles where user_id = $1',
+    [userId],
+  )
+  return row?.profile_text ?? ''
+}
+
+export async function setUserProfileText(userId: string, text: string): Promise<void> {
+  await query(
+    `insert into user_profiles(user_id, profile_text, updated_at) values($1, $2, now())
+     on conflict(user_id) do update set profile_text = excluded.profile_text, updated_at = now()`,
+    [userId, text],
+  )
+}

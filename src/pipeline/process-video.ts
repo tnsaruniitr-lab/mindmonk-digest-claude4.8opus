@@ -7,6 +7,9 @@ import { getCachedTranscript, saveTranscript } from '../services/transcripts'
 import { getVideoDigest, saveVideoDigest, updateVideoDigestGrade } from '../services/video-digests'
 import { getMinDurationMinutes } from '../services/settings'
 import { getProfile } from '../services/profile'
+import { channelIsActive } from '../services/channels'
+import { minSubscriberDurationMinutes } from '../services/subscriptions'
+import { fanOutVideo } from '../services/user-deliveries'
 import { deliver } from '../services/delivery'
 import { extractInsights } from './extract'
 import { gradeIdeas } from './grade'
@@ -34,7 +37,18 @@ export async function processVideo(
 
   await query('update videos set duration_seconds = $1, title = $2 where id = $3', [dur, title, video.id])
 
+  // Who is interested in this video? (Phase 2)
+  // - ownerFollows: channels.active keeps its legacy meaning ("in the owner's set").
+  //   Rows without a channel (on-demand /fetch) are owner-requested by definition.
+  // - subsMin: the most permissive min-duration any fan-out-eligible subscriber
+  //   would accept (null = no subscribers).
+  const globalMin = await getMinDurationMinutes()
+  const ownerFollows = video.channel_id ? await channelIsActive(video.channel_id) : true
+  const subsMin = video.channel_id ? await minSubscriberDurationMinutes(video.channel_id, globalMin) : null
+
   // --- long-form filter (skipped for on-demand /fetch & /channel via force) ---
+  // Shared work runs if ANYONE accepts the video; each party's own threshold is
+  // re-applied at their delivery step (owner inline below, subscribers in fan-out).
   if (!opts.force) {
     if (meta.liveStatus === 'is_live' || meta.liveStatus === 'is_upcoming') {
       return { kind: 'skipped', reason: 'live_or_upcoming' }
@@ -43,7 +57,12 @@ export async function processVideo(
       // Stream just ended — duration/captions are still finalizing. Retry later.
       throw new NoTranscriptYet('stream just ended; finalizing')
     }
-    const minMin = await getMinDurationMinutes()
+    const thresholds = [ownerFollows ? globalMin : null, subsMin].filter((m): m is number => m != null)
+    if (thresholds.length === 0) {
+      // Nobody follows this channel anymore (unsubscribed between enqueue and process).
+      return { kind: 'skipped', reason: 'no_subscribers' }
+    }
+    const minMin = Math.min(...thresholds)
     if (dur != null && dur < minMin * 60) {
       return { kind: 'skipped', reason: `too_short_under_${minMin}m` }
     }
@@ -117,35 +136,58 @@ export async function processVideo(
     )
   }
 
-  const profile = await getProfile()
-  const personalizeRes = await personalize({ extract, profile })
+  // --- Phase 2 fan-out (Stage A → Stage B hand-off) --------------------------------
+  // The shared ①②③ are cached; enqueue one user_deliveries row per eligible
+  // subscriber (per-sub `since` watermark + min-duration re-checked in SQL). The
+  // delivery worker personalizes ④ per user and sends. Scheduled path only — an
+  // on-demand force must never blast subscribers with back-catalog videos.
+  if (!opts.force && video.channel_id) {
+    const fanned = await fanOutVideo({
+      videoId: video.video_id,
+      channelId: video.channel_id,
+      publishedAt: video.published_at,
+      durationSeconds: dur,
+      globalMinMinutes: globalMin,
+    })
+    if (fanned > 0) log.info(`Fanned out ${video.video_id} to ${fanned} subscriber(s)`)
+  }
 
-  const html = renderDigest({
-    title,
-    channel: meta.channel,
-    url: video.url,
-    durationSeconds: dur,
-    extract,
-    grade,
-    personalize: personalizeRes,
-  })
+  // --- owner inline delivery (the legacy path, unchanged semantics) ----------------
+  // Fires when the owner follows the channel (or explicitly requested the video) and
+  // the video clears THEIR threshold — a video kept alive only by a subscriber's
+  // lower threshold must not land in the owner's chat.
+  const ownerWants = opts.force || (ownerFollows && (dur == null || dur >= globalMin * 60))
+  if (ownerWants) {
+    const profile = await getProfile()
+    const personalizeRes = await personalize({ extract, profile })
 
-  await query(
-    `insert into digests(video_id, key_insights, patterns, antipatterns, grading, tailored, rendered, primary_model, grader_model)
-     values($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [
-      video.id,
-      JSON.stringify(extract.key_insights),
-      JSON.stringify(extract.patterns),
-      JSON.stringify(extract.antipatterns),
-      grade ? JSON.stringify(grade) : null,
-      JSON.stringify(personalizeRes),
-      html,
-      cachedDigest?.extractModel ?? extractModel,
-      cachedDigest?.graderModel ?? (graderConfigured ? config.GRADER_MODEL : null),
-    ],
-  )
+    const html = renderDigest({
+      title,
+      channel: meta.channel,
+      url: video.url,
+      durationSeconds: dur,
+      extract,
+      grade,
+      personalize: personalizeRes,
+    })
 
-  await deliver(html, video.id)
+    await query(
+      `insert into digests(video_id, key_insights, patterns, antipatterns, grading, tailored, rendered, primary_model, grader_model)
+       values($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        video.id,
+        JSON.stringify(extract.key_insights),
+        JSON.stringify(extract.patterns),
+        JSON.stringify(extract.antipatterns),
+        grade ? JSON.stringify(grade) : null,
+        JSON.stringify(personalizeRes),
+        html,
+        cachedDigest?.extractModel ?? extractModel,
+        cachedDigest?.graderModel ?? (graderConfigured ? config.GRADER_MODEL : null),
+      ],
+    )
+
+    await deliver(html, video.id)
+  }
   return { kind: 'delivered' }
 }

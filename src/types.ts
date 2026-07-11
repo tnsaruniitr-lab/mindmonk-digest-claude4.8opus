@@ -36,6 +36,24 @@ export interface VideoRow {
   claimed_at: string | null
 }
 
+/** One row of the per-user delivery queue (Stage B of the fan-out). */
+export interface UserDeliveryRow {
+  id: string
+  user_id: string
+  video_id: string // YouTube 11-char id (matches video_digests/transcripts keys)
+  status: 'pending' | 'processing' | 'delivered' | 'skipped' | 'failed'
+  tailored: unknown
+  rendered: string | null
+  skip_reason: string | null
+  message_ids: unknown
+  error: string | null
+  attempts: number
+  run_after: string
+  claimed_at: string | null
+  created_at: string
+  delivered_at: string | null
+}
+
 // ----- The four digest sections ------------------------------------------------
 
 /** Section 1 + 2 — produced by the primary model from the transcript. */

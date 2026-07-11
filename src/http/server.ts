@@ -9,6 +9,8 @@ import { clearSessionCookie, csrfOk, redirect, requestUser, sessionCookie, sessi
 import { authenticate, createSession, createUser, deleteSession, loginThrottled, recordLoginFailure } from '../services/auth'
 import { createLinkToken, linkedChatId, unlinkTelegram } from '../services/links'
 import { listSubscriptions, subscribe, unsubscribe } from '../services/subscriptions'
+import { getDeliveryForUser, listDeliveries } from '../services/user-deliveries'
+import { getUserProfileText, setUserProfileText } from '../services/profile'
 import { bot } from '../bot/bot'
 import { recentJourneys, sourceCounts, spendSummary, tierStats } from '../services/waterfall'
 import { channelsOverview, getDigestRendered, jobState, latestDigest, recentDigests } from '../services/overview'
@@ -169,7 +171,7 @@ export function startHttpServer(): void {
         res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': sessionCookie(tok, 30 * 24 * 3600) }).end('{"ok":true}')
         return
       }
-      const SESSION_PATHS = new Set(['/api/me', '/api/logout', '/api/link/start', '/api/link/status', '/api/link/unlink', '/api/subscriptions', '/api/subscriptions/remove'])
+      const SESSION_PATHS = new Set(['/api/me', '/api/logout', '/api/link/start', '/api/link/status', '/api/link/unlink', '/api/subscriptions', '/api/subscriptions/remove', '/api/digests', '/api/profile'])
       if (SESSION_PATHS.has(url.pathname)) {
         const u = await requestUser(req)
         if (!u) return json(res, 401, { error: 'not signed in' })
@@ -182,6 +184,12 @@ export function startHttpServer(): void {
         }
         if (req.method === 'GET' && url.pathname === '/api/subscriptions') {
           return json(res, 200, { subscriptions: await listSubscriptions(u.id) })
+        }
+        if (req.method === 'GET' && url.pathname === '/api/digests') {
+          return json(res, 200, { digests: await listDeliveries(u.id, 20) })
+        }
+        if (req.method === 'GET' && url.pathname === '/api/profile') {
+          return json(res, 200, { profile: await getUserProfileText(u.id) })
         }
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
         if (url.pathname === '/api/logout') {
@@ -217,6 +225,31 @@ export function startHttpServer(): void {
           await unsubscribe(u.id, id)
           return json(res, 200, { ok: true })
         }
+        if (url.pathname === '/api/profile') {
+          const b = await readJsonBody(req)
+          const text = typeof b.text === 'string' ? b.text.trim() : ''
+          if (text.length > 4000) return json(res, 400, { error: 'profile too long (max 4000 chars)' })
+          await setUserProfileText(u.id, text)
+          return json(res, 200, { ok: true })
+        }
+      }
+
+      // ---- Session-authed digest viewer ("my digests" → full text) -------------
+      // Parameterized path, so it can't live in the exact-string SESSION_PATHS set.
+      // Both predicates in getDeliveryForUser (id AND user_id) are the IDOR guard.
+      const myDigest = url.pathname.match(/^\/app\/digest\/([0-9a-f-]{36})$/)
+      if (req.method === 'GET' && myDigest) {
+        const u = await requestUser(req)
+        if (!u) return redirect(res, '/login')
+        const d = await getDeliveryForUser(myDigest[1], u.id)
+        if (!d || !d.rendered) {
+          res.writeHead(404, { 'content-type': 'text/plain' }).end('digest not found')
+          return
+        }
+        res
+          .writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+          .end(digestDetailPage(d.title, d.created_at, d.rendered))
+        return
       }
 
       // ---- Admin surface (owner god-view, ?key=DASHBOARD_SECRET) ---------------

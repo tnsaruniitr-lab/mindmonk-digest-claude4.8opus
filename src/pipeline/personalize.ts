@@ -12,10 +12,14 @@ const Schema = z.object({
   not_relevant: z.string().optional(),
 })
 
-/** Section ④ — map the episode's ideas onto the user's profile and goals. */
+/** Section ④ — map the episode's ideas onto the user's profile and goals.
+ *  userId/videoId are optional cost-attribution tags (per-user ④ spend lands on
+ *  usage_events.user_id; the owner's legacy inline path passes neither). */
 export async function personalize(input: {
   extract: ExtractResult
   profile: string
+  userId?: string
+  videoId?: string
 }): Promise<PersonalizeResult> {
   const ideas = [
     ...input.extract.key_insights.map((k) => `INSIGHT: ${k.insight} — ${k.detail}`),
@@ -48,6 +52,8 @@ Rules:
       user,
       maxTokens: 3000,
       model: personalizeModel,
+      userId: input.userId,
+      videoId: input.videoId,
     }),
   )
 }

@@ -18,14 +18,15 @@ interface UsageRow {
   audioSeconds?: number
   costUsd: number
   videoId?: string | null
+  userId?: string | null // per-user attribution (Stage B ④ spend); null = platform cost
 }
 
 async function insertUsage(r: UsageRow): Promise<void> {
   // Best-effort: cost telemetry must never break the pipeline.
   try {
     await query(
-      `insert into usage_events(kind, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, video_id)
-       values($1,$2,$3,$4,$5,$6,$7,$8)`,
+      `insert into usage_events(kind, provider, model, input_tokens, output_tokens, audio_seconds, cost_usd, video_id, user_id)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [
         r.kind,
         r.provider,
@@ -35,6 +36,7 @@ async function insertUsage(r: UsageRow): Promise<void> {
         r.audioSeconds ?? null,
         r.costUsd,
         r.videoId ?? null,
+        r.userId ?? null,
       ],
     )
   } catch (e) {
@@ -48,6 +50,7 @@ export async function recordLlmUsage(p: {
   inputTokens: number
   outputTokens: number
   videoId?: string | null
+  userId?: string | null
 }): Promise<void> {
   const costUsd = estimateLlmCostUsd(p.model, p.inputTokens, p.outputTokens)
   await insertUsage({
@@ -58,6 +61,7 @@ export async function recordLlmUsage(p: {
     outputTokens: p.outputTokens,
     costUsd,
     videoId: p.videoId,
+    userId: p.userId,
   })
 }
 
