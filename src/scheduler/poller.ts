@@ -1,10 +1,13 @@
 import Parser from 'rss-parser'
 import type { ChannelRow } from '../types'
 import { markChannelChecked } from '../services/channels'
+import { one } from '../db/db'
 import { listPollableChannels, type PollableChannel } from '../services/subscriptions'
 import { enqueueDelivery, reviveDelivery } from '../services/user-deliveries'
 import { enqueueVideo, getVideoByVideoId, resetVideo, videoExists } from '../services/videos'
-import { feedUrl, parseVideoId } from '../util/youtube'
+import { getMinDurationMinutes } from '../services/settings'
+import { fetchVideoData } from '../youtube/ytdlp'
+import { feedUrl, parseVideoId, videoUrl } from '../util/youtube'
 import { log } from '../util/logger'
 
 const parser = new Parser({ timeout: 30_000 })
@@ -73,6 +76,22 @@ export async function latestVideo(
   return null
 }
 
+/** Newest N feed items (newest first) — the sampler walks these looking for long-form. */
+async function latestVideos(
+  channelId: string,
+  count: number,
+): Promise<{ videoId: string; title: string | null; publishedAt: string | null }[]> {
+  const feed = await parser.parseURL(feedUrl(channelId))
+  const out: { videoId: string; title: string | null; publishedAt: string | null }[] = []
+  for (const item of feed.items) {
+    const vid = itemVideoId(item)
+    if (!vid) continue
+    out.push({ videoId: vid, title: item.title ?? null, publishedAt: item.isoDate ?? null })
+    if (out.length >= count) break
+  }
+  return out
+}
+
 /** Sample a channel's LATEST episode for a fresh subscriber: enqueue the video for
  *  Stage A (no-op if it's already known/digested) and, for non-owners, a delivery
  *  row that bypasses the since watermark — so subscribing produces a visible digest
@@ -83,26 +102,56 @@ export async function sampleLatestForSubscriber(
   isOwner: boolean,
   ch: ChannelRow,
 ): Promise<void> {
-  const latest = await latestVideo(ch.youtube_channel_id)
-  if (!latest) return
+  // Channel feeds are full of shorts/clips, so "the newest item" is often not a
+  // digestable episode. Probe the newest few items' durations (metadata only — no
+  // download) and sample the first that clears the subscriber's threshold; fall
+  // back to the newest item so the funnel still shows an honest result if the
+  // channel has no recent long-form.
+  const candidates = await latestVideos(ch.youtube_channel_id, 6)
+  if (candidates.length === 0) return
+  const minMin = await sampleThresholdMinutes(userId)
+  let pick = candidates[0]
+  for (const c of candidates) {
+    try {
+      const dur = (await fetchVideoData(videoUrl(c.videoId))).meta.durationSeconds
+      if (dur == null || dur >= minMin * 60) {
+        pick = c
+        break
+      }
+    } catch {
+      // metadata probe failed — skip this candidate rather than abort the sample
+    }
+  }
   await enqueueVideo({
-    videoId: latest.videoId,
+    videoId: pick.videoId,
     channelId: ch.id,
-    title: latest.title,
-    publishedAt: latest.publishedAt,
+    title: pick.title,
+    publishedAt: pick.publishedAt,
   })
   // A re-subscribe is an explicit "try again": revive a video that previously ended
   // terminal (e.g. skipped no_subscribers before this user counted, or a transcript
   // that wasn't available yet) so the sample actually reprocesses.
-  const existing = await getVideoByVideoId(latest.videoId)
+  const existing = await getVideoByVideoId(pick.videoId)
   if (existing && ['skipped', 'failed', 'no_transcript'].includes(existing.status)) {
     await resetVideo(existing.id)
   }
   if (!isOwner) {
-    const fresh = await enqueueDelivery(userId, latest.videoId)
-    if (!fresh) await reviveDelivery(userId, latest.videoId)
+    const fresh = await enqueueDelivery(userId, pick.videoId)
+    if (!fresh) await reviveDelivery(userId, pick.videoId)
   }
-  log.info(`Sample queued for new subscriber: ${latest.videoId} (${ch.title ?? ch.youtube_channel_id})`)
+  log.info(`Sample queued for new subscriber: ${pick.videoId} (${ch.title ?? ch.youtube_channel_id})`)
+}
+
+/** The subscriber's effective long-form threshold: their most permissive per-sub
+ *  override, else the global default. */
+async function sampleThresholdMinutes(userId: string): Promise<number> {
+  const globalMin = await getMinDurationMinutes()
+  const row = await one<{ m: number | null }>(
+    `select min(coalesce(min_duration_minutes, $2))::int as m
+       from subscriptions where user_id = $1 and active`,
+    [userId, globalMin],
+  )
+  return row?.m ?? globalMin
 }
 
 /** Queue the latest N items from a channel regardless of age (used on /add). */
