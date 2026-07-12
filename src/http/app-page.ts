@@ -32,15 +32,16 @@ export const LOGIN_PAGE = `<!doctype html>
   body { background:var(--ink); color:var(--text); font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
          overflow-x:hidden; }
 
-  /* ---- cinematic backdrop: slow-drifting aerial video under layered dusk gradients ---- */
+  /* ---- cinematic backdrop: slow-drifting aerial forest, kept bright + natural.
+     The veil only darkens where text sits (left column + bottom edge) so the
+     forest's true greens stay clear and vivid on the right. ---- */
   .bg, .bg video, .veil { position:fixed; inset:0; }
-  .bg { z-index:-2; background:linear-gradient(160deg,#0b1d1a 0%,#0e2530 45%,#37231a 100%); }
+  .bg { z-index:-2; background:linear-gradient(160deg,#10301f 0%,#17422c 50%,#1d4f34 100%); }
   .bg video { width:100%; height:100%; object-fit:cover; animation:drift 42s ease-in-out infinite alternate; }
   @keyframes drift { from { transform:scale(1.02) translateY(0); } to { transform:scale(1.13) translateY(-2.2%); } }
   .veil { z-index:-1; background:
-      linear-gradient(105deg, rgba(7,11,15,.88) 0%, rgba(7,11,15,.55) 42%, rgba(7,11,15,.22) 68%, rgba(20,12,6,.55) 100%),
-      radial-gradient(120% 90% at 50% 118%, rgba(240,150,60,.28), transparent 55%),
-      linear-gradient(to top, rgba(7,11,15,.65), transparent 30%); }
+      linear-gradient(100deg, rgba(6,14,10,.78) 0%, rgba(6,14,10,.45) 40%, rgba(6,14,10,.08) 66%, rgba(6,14,10,0) 100%),
+      linear-gradient(to top, rgba(6,14,10,.55), transparent 26%); }
 
   /* ---- layout ---- */
   .wrap { min-height:100%; display:grid; grid-template-columns:minmax(0,1.15fr) minmax(340px,420px);
