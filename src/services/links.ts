@@ -58,6 +58,14 @@ export async function redeemLinkToken(token: string, chatId: string): Promise<Re
   // Linking is also the recovery path from a Telegram-403 pause: they clearly
   // want (and can now receive) deliveries again.
   await query(`update users set status = 'active' where id = $1 and status = 'paused'`, [row.user_id])
+  // Digests that rendered while they were web-only ("telegram not linked" skips)
+  // can now actually be sent — requeue them; the persisted render is reused, so
+  // this re-pays nothing.
+  await query(
+    `update user_deliveries set status = 'pending', run_after = now(), claimed_at = null, skip_reason = null
+      where user_id = $1 and status = 'skipped' and skip_reason = 'telegram not linked'`,
+    [row.user_id],
+  )
   // Owner bootstrap (spec §8): the account that links the historical owner chat
   // becomes the owner and inherits every existing catalog channel as subscriptions.
   // Gated on OWNER_EMAIL so ownership can't be transferred by phishing the owner into

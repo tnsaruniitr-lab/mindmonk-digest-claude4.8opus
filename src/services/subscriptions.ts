@@ -12,16 +12,19 @@ import type { User } from './auth'
 const MAX_CHANNELS_PER_USER = 10
 
 // The recurring eligibility legs for fan-out-driving subscriptions: the user is
-// active (not paused via Telegram 403) and has a linked chat to deliver to. The
-// owner is excluded — they're served by the legacy inline path in process-video —
-// and the exclusion is double-keyed (is_owner AND the owner's chat id) so a linked
-// account that was never promoted can't double-drive polling or receive dupes.
+// active (not paused via Telegram 403) and their subscription is live. A linked
+// Telegram is NOT required — digests render into user_deliveries and are readable
+// on the web ("my digests"); linking just adds Telegram delivery. The owner is
+// excluded — they're served by the legacy inline path in process-video — and the
+// exclusion is double-keyed (is_owner AND the owner's chat id) so a linked account
+// that was never promoted can't double-drive polling or receive dupes.
 // `ownerChatParam` is the SQL placeholder (e.g. '$1') bound to config.TELEGRAM_CHAT_ID.
 const fanoutSubJoin = (ownerChatParam: string) => `
   from subscriptions s
-  join users u           on u.id = s.user_id
-  join telegram_links tl on tl.user_id = s.user_id
- where s.active and u.status = 'active' and not u.is_owner and tl.chat_id <> ${ownerChatParam}`
+  join users u                on u.id = s.user_id
+  left join telegram_links tl on tl.user_id = s.user_id
+ where s.active and u.status = 'active' and not u.is_owner
+   and (tl.chat_id is null or tl.chat_id <> ${ownerChatParam})`
 
 export interface SubscriptionRow {
   id: string

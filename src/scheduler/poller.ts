@@ -2,8 +2,8 @@ import Parser from 'rss-parser'
 import type { ChannelRow } from '../types'
 import { markChannelChecked } from '../services/channels'
 import { listPollableChannels, type PollableChannel } from '../services/subscriptions'
-import { enqueueDelivery } from '../services/user-deliveries'
-import { enqueueVideo, videoExists } from '../services/videos'
+import { enqueueDelivery, reviveDelivery } from '../services/user-deliveries'
+import { enqueueVideo, getVideoByVideoId, resetVideo, videoExists } from '../services/videos'
 import { feedUrl, parseVideoId } from '../util/youtube'
 import { log } from '../util/logger'
 
@@ -91,7 +91,17 @@ export async function sampleLatestForSubscriber(
     title: latest.title,
     publishedAt: latest.publishedAt,
   })
-  if (!isOwner) await enqueueDelivery(userId, latest.videoId)
+  // A re-subscribe is an explicit "try again": revive a video that previously ended
+  // terminal (e.g. skipped no_subscribers before this user counted, or a transcript
+  // that wasn't available yet) so the sample actually reprocesses.
+  const existing = await getVideoByVideoId(latest.videoId)
+  if (existing && ['skipped', 'failed', 'no_transcript'].includes(existing.status)) {
+    await resetVideo(existing.id)
+  }
+  if (!isOwner) {
+    const fresh = await enqueueDelivery(userId, latest.videoId)
+    if (!fresh) await reviveDelivery(userId, latest.videoId)
+  }
   log.info(`Sample queued for new subscriber: ${latest.videoId} (${ch.title ?? ch.youtube_channel_id})`)
 }
 

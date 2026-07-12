@@ -354,14 +354,41 @@ export const APP_PAGE = `<!doctype html>
     }).catch(function () { btn.disabled = false; msg.className = 'err'; msg.textContent = 'network error' })
   })
 
+  // Friendly funnel state per digest row: where the video is in the pipeline and,
+  // when it ended, why. Kept honest — skip/error reasons are shown, not hidden.
+  function digestState(d) {
+    if (d.status === 'delivered') return { label: '✓ delivered', on: true, live: false }
+    if (d.status === 'pending' || d.status === 'processing') {
+      var vs = d.video_status
+      if (vs === 'done') return { label: '✍️ personalizing…', on: false, live: true }
+      if (vs === 'processing') return { label: '⏳ transcribing & summarizing…', on: false, live: true }
+      if (vs === 'pending' || !vs) return { label: '⏳ queued…', on: false, live: true }
+      return { label: '⏳ working…', on: false, live: true }
+    }
+    if (d.status === 'skipped') {
+      var r = d.skip_reason || ''
+      if (r.indexOf('telegram not linked') !== -1) return { label: '📖 on web — link Telegram for delivery', on: true, live: false }
+      var m = r.match(/too_short_under_(\\d+)m/)
+      if (m) return { label: 'skipped — shorter than ' + m[1] + ' min', on: false, live: false }
+      return { label: 'skipped — ' + (r || d.video_skip_reason || 'not digestable'), on: false, live: false }
+    }
+    return { label: 'failed — ' + (d.error || 'will not retry'), on: false, live: false }
+  }
+  var dgTimer = null
   function renderDigests(digests) {
+    var anyLive = false
     document.getElementById('dgList').innerHTML = digests.map(function (d) {
+      var st = digestState(d)
+      if (st.live) anyLive = true
       var name = d.title || '(untitled)'
       var body = d.has_render ? '<a href="/app/digest/' + esc(d.id) + '">' + esc(name) + '</a>' : esc(name)
-      return '<li><span>' + body + '</span><span class="pill ' + (d.status === 'delivered' ? 'on' : 'off') + '">' + esc(d.status) + '</span></li>'
+      return '<li><span>' + body + '</span><span class="pill ' + (st.on ? 'on' : 'off') + '">' + esc(st.label) + '</span></li>'
     }).join('') || '<li class="muted">no digests yet — they arrive as your channels publish new episodes</li>'
+    // Live-poll while anything is still moving through the funnel; stop when settled.
+    if (anyLive && !dgTimer) dgTimer = setInterval(refreshDigests, 8000)
+    if (!anyLive && dgTimer) { clearInterval(dgTimer); dgTimer = null }
   }
-  function refreshDigests() { get('/api/digests').then(function (r) { renderDigests(r.digests) }) }
+  function refreshDigests() { get('/api/digests').then(function (r) { renderDigests(r.digests) }).catch(function () {}) }
 
   refreshMe(); refreshSubs(); refreshProfile(); refreshDigests()
 })()

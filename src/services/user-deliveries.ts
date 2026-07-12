@@ -12,6 +12,8 @@ import type { UserDeliveryRow } from '../types'
  * Enqueue one pending delivery per eligible subscriber of the channel. Eligible =
  * active subscription of an active, non-owner user with a LINKED Telegram chat,
  * whose per-sub watermark (`since`) and min-duration accept this video.
+ * - A linked Telegram is NOT required: the rendered digest is readable on the web,
+ *   and Stage B skips only the Telegram send for unlinked users (after rendering).
  * - The owner is excluded: they're served by the legacy inline path in process-video.
  *   That exclusion is DOUBLE-keyed — is_owner AND the owner's chat id — so a linked
  *   web account that was never promoted (OWNER_EMAIL unset/mismatched) can't receive
@@ -33,10 +35,11 @@ export async function fanOutVideo(input: {
     `insert into user_deliveries(user_id, video_id)
        select s.user_id, $1
          from subscriptions s
-         join users u          on u.id = s.user_id
-         join telegram_links tl on tl.user_id = s.user_id
+         join users u                on u.id = s.user_id
+         left join telegram_links tl on tl.user_id = s.user_id
         where s.channel_id = $2 and s.active
-          and u.status = 'active' and not u.is_owner and tl.chat_id <> $6
+          and u.status = 'active' and not u.is_owner
+          and (tl.chat_id is null or tl.chat_id <> $6)
           and $3::timestamptz > s.since
           and ($4::int is null or $4 >= coalesce(s.min_duration_minutes, $5) * 60)
      on conflict(user_id, video_id) do nothing
@@ -64,6 +67,18 @@ export async function enqueueDelivery(userId: string, videoId: string): Promise<
     [userId, videoId],
   )
   return rows.length > 0
+}
+
+/** Re-open a terminally skipped/failed delivery (explicit re-subscribe = the user
+ *  asking again). Fresh attempt budget; pending rows are left untouched. */
+export async function reviveDelivery(userId: string, videoId: string): Promise<void> {
+  await query(
+    `update user_deliveries
+        set status = 'pending', run_after = now(), claimed_at = null,
+            skip_reason = null, error = null, attempts = 0
+      where user_id = $1 and video_id = $2 and status in ('skipped', 'failed')`,
+    [userId, videoId],
+  )
 }
 
 /** Atomically claim the next due delivery (FOR UPDATE SKIP LOCKED — race-safe). */
@@ -169,14 +184,21 @@ export interface DeliveryListItem {
   title: string | null
   url: string | null
   has_render: boolean // rendered digest exists → the web viewer can show it
+  video_status: string | null // shared Stage-A state: pending|processing|done|skipped|failed|no_transcript
+  video_skip_reason: string | null
+  skip_reason: string | null // this delivery's own skip reason (e.g. telegram not linked)
+  error: string | null
   created_at: string
   delivered_at: string | null
 }
 
-/** Newest-first digests for ONE user (IDOR guard: always filtered by user_id). */
+/** Newest-first digests for ONE user, with enough funnel state for the UI to show
+ *  live progress (IDOR guard: always filtered by user_id). */
 export async function listDeliveries(userId: string, limit = 20): Promise<DeliveryListItem[]> {
   return query<DeliveryListItem>(
     `select ud.id, ud.status, v.title, v.url, (ud.rendered is not null) as has_render,
+            v.status as video_status, v.skip_reason as video_skip_reason,
+            ud.skip_reason, ud.error,
             ud.created_at::text, ud.delivered_at::text
        from user_deliveries ud
        left join videos v on v.video_id = ud.video_id
