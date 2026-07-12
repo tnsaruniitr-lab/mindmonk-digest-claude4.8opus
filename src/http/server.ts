@@ -35,20 +35,24 @@ function authorized(url: URL): boolean {
   return given.length === want.length && timingSafeEqual(given, want)
 }
 
-// The landing hero video, shipped in the image. Streamed with byte-range support —
-// Safari refuses to play <video> from servers that ignore Range requests.
-const HERO_PATH = fileURLToPath(new URL('../../assets/hero.mp4', import.meta.url))
+// Landing/app backdrop assets, shipped in the image. The video is streamed with
+// byte-range support — Safari refuses to play <video> from servers that ignore
+// Range requests. The poster paints instantly while the video loads.
+const ASSETS: Record<string, { path: string; type: string }> = {
+  '/assets/hero.mp4': { path: fileURLToPath(new URL('../../assets/hero.mp4', import.meta.url)), type: 'video/mp4' },
+  '/assets/hero-poster.jpg': { path: fileURLToPath(new URL('../../assets/hero-poster.jpg', import.meta.url)), type: 'image/jpeg' },
+}
 
-function serveHeroVideo(req: IncomingMessage, res: ServerResponse): void {
+function serveAsset(req: IncomingMessage, res: ServerResponse, asset: { path: string; type: string }): void {
   let size: number
   try {
-    size = statSync(HERO_PATH).size
+    size = statSync(asset.path).size
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain' }).end('not found')
     return
   }
   const common = {
-    'content-type': 'video/mp4',
+    'content-type': asset.type,
     'accept-ranges': 'bytes',
     'cache-control': 'public, max-age=604800',
   }
@@ -61,10 +65,10 @@ function serveHeroVideo(req: IncomingMessage, res: ServerResponse): void {
       return
     }
     res.writeHead(206, { ...common, 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': end - start + 1 })
-    createReadStream(HERO_PATH, { start, end }).pipe(res)
+    createReadStream(asset.path, { start, end }).pipe(res)
   } else {
     res.writeHead(200, { ...common, 'content-length': size })
-    createReadStream(HERO_PATH).pipe(res)
+    createReadStream(asset.path).pipe(res)
   }
 }
 
@@ -159,8 +163,8 @@ export function startHttpServer(): void {
         res.writeHead(200, { 'content-type': 'text/plain' }).end('ok')
         return
       }
-      if (req.method === 'GET' && url.pathname === '/assets/hero.mp4') {
-        serveHeroVideo(req, res)
+      if (req.method === 'GET' && ASSETS[url.pathname]) {
+        serveAsset(req, res, ASSETS[url.pathname])
         return
       }
 

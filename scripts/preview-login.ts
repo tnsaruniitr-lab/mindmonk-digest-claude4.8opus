@@ -4,13 +4,24 @@
 import { createServer } from 'node:http'
 import { createReadStream, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { LOGIN_PAGE } from '../src/http/app-page'
+import { APP_PAGE, LOGIN_PAGE } from '../src/http/app-page'
 
 const HERO = fileURLToPath(new URL('../assets/hero.mp4', import.meta.url))
+const POSTER = fileURLToPath(new URL('../assets/hero-poster.jpg', import.meta.url))
 const PORT = 5184
 
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
+  if (url.pathname === '/assets/hero-poster.jpg') {
+    res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': statSync(POSTER).size })
+    createReadStream(POSTER).pipe(res)
+    return
+  }
+  if (url.pathname === '/app') {
+    // Static preview: /api/* calls will fail parse and leave placeholder text — fine for layout checks.
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(APP_PAGE)
+    return
+  }
   if (url.pathname === '/assets/hero.mp4') {
     const size = statSync(HERO).size
     const m = typeof req.headers.range === 'string' ? req.headers.range.match(/^bytes=(\d*)-(\d*)$/) : null
